@@ -1,0 +1,13 @@
+# Keep agp and kotlin the same as in MeshCore TAK Bridge and WearMesh, which include this build.
+[versions]
+agp = "8.7.3"
+kotlin = "2.0.21"
+junit = "4.13.2"
+
+[libraries]
+junit = { module = "junit:junit", version.ref = "junit" }
+
+[plugins]
+android-library = { id = "com.android.library", version.ref = "agp" }
+kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
+kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }

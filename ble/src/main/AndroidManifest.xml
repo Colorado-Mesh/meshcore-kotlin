@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  No permissions here on purpose. Each app declares its own Bluetooth permissions, because they
+  differ: WearMesh marks scanning neverForLocation, and the bridge supports Android 8 to 11, which
+  need the older permissions and location.
+-->
+<manifest />

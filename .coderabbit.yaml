@@ -1,0 +1,107 @@
+# CodeRabbit review settings for meshcore-kotlin.
+# Reference: https://docs.coderabbit.ai/reference/configuration
+#
+# This code runs inside both MeshCore TAK Bridge and WearMesh, so a defect here reaches both.
+# Reviews should catch writes to the radio, Bluetooth steps that can hang, malformed frames that
+# throw, and changes that suit one app but break the other. Style is left alone.
+
+language: en-GB # Match the apps' docs and text.
+tone_instructions: >-
+  Be brief and concrete. Flag real defects and risks, with the failing case. Skip style, naming
+  and refactoring suggestions unless they hide a bug. Write in plain British English.
+early_access: false
+
+reviews:
+  profile: chill
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  review_status: true
+  collapse_walkthrough: true
+  sequence_diagrams: false
+
+  path_filters:
+    - "!**/build/**"
+    - "!.gradle/**"
+    - "!gradle/wrapper/gradle-wrapper.jar"
+
+  path_instructions:
+    - path: "**"
+      instructions: |
+        Shared by two Android apps: MeshCore TAK Bridge (a phone, minSdk 26) and WearMesh (a
+        Wear OS watch, minSdk 33, battery-limited). Flag any change that would help one and
+        break the other, and any public API change that the README's usage section or either
+        app would need to follow. Never write to the radio's configuration: no channels,
+        contacts, settings, advertised position, paths or keys. Focus on correctness, thread
+        safety, resource leaks and lost or duplicated messages.
+
+    - path: "protocol/**"
+      instructions: |
+        MeshCore companion protocol in pure Kotlin. Everything from the radio is untrusted:
+        check every length and offset before reading, and never let a malformed frame throw out
+        of the client. One command is outstanding at a time, each with a time limit; check that
+        a queued command cannot stall the queue. Flag any command that sets, adds, removes or
+        resets state on the radio. Undocumented layouts come from the MeshCore firmware source
+        (MyMesh.cpp, BaseChatMesh.cpp); ask for a reference when a new one appears. Timing uses
+        the injected wall clock, never Thread.sleep or a monotonic clock that stops in sleep.
+        ChannelReplies turns "@name" and "@@" into MeshCore's "@[Name]" reply form and must
+        never guess between several matching names. Mecp follows the MECP project's reference
+        decoder; anything that is not MECP is shown exactly as it arrived.
+
+    - path: "ble/**"
+      instructions: |
+        Bluetooth LE link to the radio. All work runs on the link's own handler thread. Check
+        that each step clears its time limit, that close() is safe to call more than once, that
+        callbacks from a superseded connection attempt are ignored, and that a failure always
+        ends in onClosed with a reason. Code must work from API 26; flag newer APIs without a
+        version check. A first connection often fails with status 133, hence the retries.
+
+    - path: "**/src/test/**"
+      instructions: |
+        JUnit tests. Prefer tests of behaviour with recorded frames. Flag tests that depend on
+        timing (fixed sleeps) or on the order of hash-based collections.
+
+    - path: ".github/workflows/**"
+      instructions: |
+        Every action except github/codeql-action must be pinned to a full commit SHA with its
+        version in a comment. Permissions stay least-privilege. Values from the event reach
+        shell scripts only through env, never as ${{ }} inside run blocks.
+
+  auto_review:
+    enabled: true
+    drafts: false
+    auto_incremental_review: true
+
+  tools:
+    actionlint:
+      enabled: true
+    zizmor:
+      enabled: true
+    shellcheck:
+      enabled: true
+    gitleaks:
+      enabled: true
+    trufflehog:
+      enabled: true
+    detekt:
+      enabled: false
+    yamllint:
+      enabled: false
+    markdownlint:
+      enabled: false
+    languagetool:
+      enabled: false
+
+chat:
+  auto_reply: true
+
+knowledge_base:
+  linked_repositories:
+    - repository: "Colorado-Mesh/meshcore-tak-bridge"
+      instructions: >-
+        Uses this code for its link to the radio. Its docs/DESIGN.md and docs/STATUS.md record
+        what was learned on phones and tablets.
+    - repository: "Colorado-Mesh/wearmesh"
+      instructions: >-
+        Uses this code on a Wear OS watch. Its docs/design.md records what was learned on the
+        Pixel Watch 5, including that Handler delays stop while the watch sleeps.

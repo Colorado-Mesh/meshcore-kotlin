@@ -91,6 +91,13 @@ class CompanionClient(
 
         /** How a position request to the tracked node [publicKeyHex] ended. */
         fun onTelemetry(publicKeyHex: String, outcome: TelemetryOutcome) {}
+
+        /**
+         * The radio says it has no more queued messages: once start-up has collected what was
+         * waiting, and again after each later collection. An app that only checks in can
+         * disconnect here. Not called when the radio refuses or does not answer the request.
+         */
+        fun onQueueEmpty() {}
     }
 
     private sealed interface Job {
@@ -339,7 +346,10 @@ class CompanionClient(
                     finish(job)
                     enqueueOnce(Job.Sync)
                 }
-                CompanionFrame.NoMoreMessages -> finish(job)
+                CompanionFrame.NoMoreMessages -> {
+                    finish(job)
+                    listener.onQueueEmpty()
+                }
                 else -> Unit
             }
             is Job.SendText -> if (frame == CompanionFrame.Ok) {

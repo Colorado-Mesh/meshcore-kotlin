@@ -16,6 +16,7 @@ class CompanionClientTest {
     private var channels: List<Channel>? = null
     private val batteries = ArrayList<Int>()
     private val positions = ArrayList<Pair<String, TelemetryOutcome>>()
+    private var queueEmpties = 0
     private var now = 1_800_000_000_000L
 
     private val client = CompanionClient(
@@ -32,6 +33,7 @@ class CompanionClientTest {
             }
             override fun onBattery(millivolts: Int) { batteries.add(millivolts) }
             override fun onTelemetry(publicKeyHex: String, outcome: TelemetryOutcome) { positions.add(publicKeyHex.take(2) to outcome) }
+            override fun onQueueEmpty() { queueEmpties++ }
         },
         clock = { now },
     )
@@ -93,6 +95,25 @@ class CompanionClientTest {
         assertEquals(-104.9903, repeater.longitude, 1e-9)
         assertTrue(repeater.hasPosition)
         assertTrue(log.isEmpty())
+    }
+
+    @Test
+    fun saysWhenTheQueueIsEmptyAfterStartUpAndEachCollection() {
+        startUp()
+        assertEquals(1, queueEmpties)
+        client.onFrame(byteArrayOf(0x83.toByte()))
+        client.onFrame(channelText(0, "Ann: hello"))
+        assertEquals(1, queueEmpties)
+        client.onFrame(byteArrayOf(0x0A))
+        assertEquals(2, queueEmpties)
+    }
+
+    @Test
+    fun aRefusedCollectionIsNotReportedAsAnEmptyQueue() {
+        startUp()
+        client.onFrame(byteArrayOf(0x83.toByte()))
+        client.onFrame(byteArrayOf(1, 1))
+        assertEquals(1, queueEmpties)
     }
 
     @Test

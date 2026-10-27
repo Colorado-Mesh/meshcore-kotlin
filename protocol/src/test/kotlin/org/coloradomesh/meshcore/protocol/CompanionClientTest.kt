@@ -17,6 +17,8 @@ class CompanionClientTest {
     private val batteries = ArrayList<Int>()
     private val positions = ArrayList<Pair<String, TelemetryOutcome>>()
     private var queueEmpties = 0
+    private val contactsRead = ArrayList<Long>()
+    private val unanswered = ArrayList<Set<Int>>()
     private var now = 1_800_000_000_000L
 
     private val client = CompanionClient(
@@ -34,8 +36,24 @@ class CompanionClientTest {
             override fun onBattery(millivolts: Int) { batteries.add(millivolts) }
             override fun onTelemetry(publicKeyHex: String, outcome: TelemetryOutcome) { positions.add(publicKeyHex.take(2) to outcome) }
             override fun onQueueEmpty() { queueEmpties++ }
+            override fun onContactsRead(lastModified: Long) { contactsRead.add(lastModified) }
+            override fun onChannelSlotsUnanswered(slots: Set<Int>) { unanswered.add(slots) }
         },
         clock = { now },
+    )
+
+    /** A client for an app that keeps contacts and channels: changed contacts only, no channel slots. */
+    private val briefClient = CompanionClient(
+        transmit = { sent.add(it) },
+        listener = object : CompanionClient.Listener {
+            override fun onChannels(channels: List<Channel>) { this@CompanionClientTest.channels = channels }
+            override fun onChannelMessage(message: ChannelMessage) { messages.add(message) }
+            override fun onSendResult(channelIndex: Int, text: String, accepted: Boolean) { results.add(text to accepted) }
+            override fun onQueueEmpty() { queueEmpties++ }
+            override fun onContactsRead(lastModified: Long) { contactsRead.add(lastModified) }
+        },
+        clock = { now },
+        startUp = CompanionClient.StartUp(contactsSince = 1_700_000_400, readChannels = false),
     )
 
     private fun le32(value: Long) = ByteArray(4) { (value shr (8 * it)).toByte() }
@@ -439,5 +457,104 @@ class CompanionClientTest {
         assertEquals(listOf("Ann: on scene", "Radio: on scene"), messages.map { it.text })
         assertEquals(1, messages.last().channelIndex)
         assertTrue(log.single().startsWith("Echo check"))
+    }
+
+    @Test
+    fun reportsWhenEachContactListRequestEnds() {
+        startUp()
+        assertEquals(listOf(1_700_000_500L), contactsRead)
+        client.onFrame(byteArrayOf(0x80.toByte()) + ByteArray(32))
+        client.onFrame(byteArrayOf(2) + le32(0))
+        client.onFrame(byteArrayOf(4) + le32(1_700_000_800))
+        assertEquals(listOf(1_700_000_500L, 1_700_000_800L), contactsRead)
+    }
+
+    @Test
+    fun anOlderLastModifiedDoesNotTurnTheContactClockBack() {
+        startUp()
+        client.onFrame(byteArrayOf(0x80.toByte()) + ByteArray(32))
+        client.onFrame(byteArrayOf(4) + le32(1_600_000_000))
+        assertEquals(listOf(1_700_000_500L, 1_700_000_500L), contactsRead)
+    }
+
+    @Test
+    fun aBriefStartUpAsksForChangedContactsAndSkipsTheChannelSlots() {
+        briefClient.start()
+        briefClient.onFrame(selfInfo())
+        assertArrayEquals(byteArrayOf(0x16, 3), lastSent())
+        briefClient.onFrame(deviceInfo(slots = 40))
+        assertArrayEquals(byteArrayOf(4) + le32(1_700_000_400), lastSent())
+        briefClient.onFrame(byteArrayOf(2) + le32(0))
+        briefClient.onFrame(byteArrayOf(4) + le32(1_700_000_600))
+        assertEquals(listOf(1_700_000_600L), contactsRead)
+        // Straight to the waiting messages: no channel slot is asked for.
+        assertArrayEquals(byteArrayOf(0x0A), lastSent())
+        assertTrue(sent.none { it[0] == 0x1F.toByte() })
+        briefClient.onFrame(channelText(3, "Ann: hello"))
+        // Start-up is over, so the battery is read before collecting again, as after a full start-up.
+        assertArrayEquals(byteArrayOf(0x14), lastSent())
+        briefClient.onFrame(battery(3_900))
+        assertArrayEquals(byteArrayOf(0x0A), lastSent())
+        briefClient.onFrame(byteArrayOf(0x0A))
+        assertEquals(listOf("Ann: hello"), messages.map { it.text })
+        assertEquals(3, messages.single().channelIndex)
+        assertEquals(1, queueEmpties)
+        assertEquals(null, channels)
+    }
+
+    @Test
+    fun aBriefStartUpIsReadyToSendOnceTheDeviceAnswers() {
+        briefClient.start()
+        briefClient.onFrame(selfInfo())
+        briefClient.sendChannelText(0, "too early")
+        assertEquals(listOf("too early" to false), results)
+        briefClient.onFrame(deviceInfo(slots = 40))
+        briefClient.sendChannelText(0, "on scene")
+        assertTrue(results.size == 1)
+        briefClient.onFrame(byteArrayOf(2) + le32(0))
+        briefClient.onFrame(byteArrayOf(4) + le32(1_700_000_600))
+        briefClient.onFrame(byteArrayOf(0x0A))
+        briefClient.onFrame(battery(3_900))
+        // The message waited its turn behind start-up's own requests.
+        assertEquals(3, lastSent()[0].toInt())
+        briefClient.onFrame(byteArrayOf(0))
+        assertEquals(listOf("too early" to false, "on scene" to true), results)
+    }
+
+    @Test
+    fun aBriefStartUpActsOnANoticeOfNewMessages() {
+        briefClient.start()
+        briefClient.onFrame(selfInfo())
+        briefClient.onFrame(deviceInfo(slots = 40))
+        briefClient.onFrame(byteArrayOf(4) + le32(1_700_000_600))
+        briefClient.onFrame(byteArrayOf(0x0A))
+        briefClient.onFrame(battery(3_900))
+        val before = sent.size
+        briefClient.onFrame(byteArrayOf(0x83.toByte()))
+        assertEquals(before + 1, sent.size)
+        assertArrayEquals(byteArrayOf(0x0A), lastSent())
+    }
+
+    @Test
+    fun aChannelSlotWithNoAnswerIsNamedButAnEmptyOneIsNot() {
+        client.start()
+        client.onFrame(selfInfo())
+        client.onFrame(deviceInfo(slots = 3))
+        client.onFrame(byteArrayOf(4) + le32(1_700_000_500))
+        client.onFrame(channelInfo(0, "Public"))
+        // Slot 1 goes unanswered until its time limit passes.
+        now += 60_000
+        client.tick()
+        assertArrayEquals(byteArrayOf(0x1F, 2), lastSent())
+        // Slot 2 is empty: the radio answers with an error.
+        client.onFrame(byteArrayOf(1, 2))
+        assertEquals(listOf(setOf(1)), unanswered)
+        assertEquals(listOf(Channel(0, "Public")), channels)
+    }
+
+    @Test
+    fun aFullyAnsweredChannelListNamesNoSlots() {
+        startUp()
+        assertTrue(unanswered.isEmpty())
     }
 }

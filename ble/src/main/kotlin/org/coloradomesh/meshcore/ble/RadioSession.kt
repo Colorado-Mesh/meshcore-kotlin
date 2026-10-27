@@ -25,14 +25,18 @@ class RadioSession(
     appName: String,
     onLog: (message: String) -> Unit = {},
     onLinkReady: (packetSize: Int) -> Unit = {},
+    /** Connection tries before giving up, the first included. */
+    connectTries: Int = GattLink.DEFAULT_CONNECT_TRIES,
+    /** What the protocol client reads at start-up; see [CompanionClient.StartUp]. */
+    startUp: CompanionClient.StartUp = CompanionClient.StartUp(),
     onClosed: (reason: String) -> Unit,
 ) : GattLink.Events {
     // Kept under their own names so they cannot be mistaken for the GattLink.Events methods.
     private val logTo = onLog
     private val linkReadyTo = onLinkReady
     private val closedTo = onClosed
-    private val link = GattLink(context, this)
-    private val client = CompanionClient(transmit = { link.send(it) }, listener = listener, appName = appName)
+    private val link = GattLink(context, this, connectTries)
+    private val client = CompanionClient(transmit = { link.send(it) }, listener = listener, appName = appName, startUp = startUp)
     private val ticker = Executors.newSingleThreadScheduledExecutor()
 
     fun open() {

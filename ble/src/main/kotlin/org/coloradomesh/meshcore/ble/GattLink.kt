@@ -28,15 +28,20 @@ import java.util.UUID
  * The packet size request is allowed to go unanswered: the link carries on at the default size
  * rather than waiting forever, which is where some tablets were seen to stall.
  *
- * Connecting waits a moment first and is tried up to [CONNECT_TRIES] times. Android, Samsung
- * devices especially, often fails a first connection with status 133, and more so straight
- * after a scan has stopped; the next try usually works. Giving up after one try made it look as
- * if a radio had to be tapped several times.
+ * Connecting waits a moment first and is tried up to [connectTries] times, 3 unless the caller
+ * asks for more. Android, Samsung devices especially, often fails a first connection with status
+ * 133, and more so straight after a scan has stopped; the next try usually works. Giving up after
+ * one try made it look as if a radio had to be tapped several times.
  *
  * A link is used once. After [Events.onClosed] make a new one to reconnect.
  */
 @SuppressLint("MissingPermission") // The caller checks Bluetooth permission before connecting.
-class GattLink(private val context: Context, private val events: Events) {
+class GattLink(
+    private val context: Context,
+    private val events: Events,
+    /** Connection tries before giving up, the first included; at least 1. */
+    connectTries: Int = DEFAULT_CONNECT_TRIES,
+) {
     interface Events {
         fun onLog(message: String)
 
@@ -63,6 +68,7 @@ class GattLink(private val context: Context, private val events: Events) {
     private var writing = false
     private var receiverRegistered = false
     private var attempts = 0
+    private val connectTries = connectTries.coerceAtLeast(1)
 
     fun connect(device: BluetoothDevice) = handler.post {
         if (step != Step.IDLE) return@post
@@ -75,7 +81,7 @@ class GattLink(private val context: Context, private val events: Events) {
     private fun attempt(device: BluetoothDevice) {
         if (step != Step.CONNECTING) return
         attempts++
-        val which = if (attempts > 1) " (try $attempts of $CONNECT_TRIES)" else ""
+        val which = if (attempts > 1) " (try $attempts of $connectTries)" else ""
         events.onLog("Connecting to ${device.address}$which")
         limit(CONNECT_MS) { connectFailed(device, "no answer within ${CONNECT_MS / 1000} s") }
         gatt = device.connectGatt(
@@ -89,7 +95,7 @@ class GattLink(private val context: Context, private val events: Events) {
         if (gatt == null) shutdown("Android refused to open the connection")
     }
 
-    /** A connection try failed before the link came up: drop it and try again, up to [CONNECT_TRIES]. */
+    /** A connection try failed before the link came up: drop it and try again, up to [connectTries]. */
     private fun connectFailed(device: BluetoothDevice, why: String) {
         clearLimit()
         gatt?.let {
@@ -97,7 +103,7 @@ class GattLink(private val context: Context, private val events: Events) {
             it.close()
         }
         gatt = null
-        if (attempts < CONNECT_TRIES) {
+        if (attempts < connectTries) {
             events.onLog("Connection try $attempts failed ($why); trying again")
             handler.postDelayed({ attempt(device) }, RETRY_PAUSE_MS)
         } else {
@@ -365,7 +371,9 @@ class GattLink(private val context: Context, private val events: Events) {
         private const val SETTLE_MS = 600L
         /** Per try. Android's own limit for a direct connection is about 30 s. */
         private const val CONNECT_MS = 12_000L
-        private const val CONNECT_TRIES = 3
+
+        /** Connection tries, the first included, when the caller does not say. */
+        const val DEFAULT_CONNECT_TRIES = 3
         private const val RETRY_PAUSE_MS = 1_500L
         private const val DISCOVER_MS = 15_000L
         private const val MTU_MS = 4_000L

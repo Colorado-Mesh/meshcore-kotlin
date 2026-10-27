@@ -35,7 +35,8 @@ sealed interface TelemetryOutcome {
  * The radio answers one command at a time, so commands wait in a queue and each has a time
  * limit. After [start] the client introduces itself, reads the radio's capacity, its contacts
  * and every channel slot it reports, then collects queued messages; from then on it reacts to
- * the radio's own notices of new messages and adverts. It reads the battery once start-up is done
+ * the radio's own notices of new messages and adverts. An app that keeps contacts and channels
+ * between connections can ask for less at start-up with [StartUp]. It reads the battery once start-up is done
  * and every [BATTERY_INTERVAL_MS] after that.
  *
  * Nodes given to [setTracking] are asked for their position in turn, each about once per interval.
@@ -63,7 +64,21 @@ class CompanionClient(
     private val clock: () -> Long = System::currentTimeMillis,
     /** The name sent in the opening greeting, such as the app's name; the radio truncates it to 12 bytes. */
     private val appName: String = APP_NAME,
+    /** What to read at start-up besides the greeting and the device query. */
+    private val startUp: StartUp = StartUp(),
 ) {
+    /**
+     * What [start] reads before collecting messages.
+     *
+     * By default every contact and every channel slot. An app that keeps them between
+     * connections, such as one that connects briefly every few minutes, can ask for contacts
+     * changed since [contactsSince] (the value [Listener.onContactsRead] last gave) and skip the
+     * channel slots with [readChannels] false; [Listener.onChannels] is then not called. Contacts
+     * removed from the radio are not reported by a request for changes, so such an app should
+     * still read everything from time to time.
+     */
+    data class StartUp(val contactsSince: Long = 0, val readChannels: Boolean = true)
+
     interface Listener {
         fun onLog(message: String) {}
 
@@ -73,8 +88,21 @@ class CompanionClient(
 
         fun onContact(contact: Contact) {}
 
-        /** Every programmed channel, once all slots have been read. */
+        /**
+         * A contact list request has ended, at start-up or after an advert was heard. Give
+         * [lastModified] back as [StartUp.contactsSince] to ask a later connection for changes only.
+         */
+        fun onContactsRead(lastModified: Long) {}
+
+        /**
+         * Every programmed channel, once all slots have been asked for. A slot the radio did not
+         * answer in time is missing from the list, as an empty one is; [onChannelSlotsUnanswered]
+         * comes first and names such slots, so an app that keeps channels can keep what it had.
+         */
         fun onChannels(channels: List<Channel>) {}
+
+        /** Slots the radio gave no answer for during this read of the channel list; never empty. */
+        fun onChannelSlotsUnanswered(slots: Set<Int>) {}
 
         fun onChannelMessage(message: ChannelMessage) {}
 
@@ -129,9 +157,10 @@ class CompanionClient(
     private val queue = ArrayDeque<Job>()
     private var current: Job? = null
     private var deadline = 0L
-    private var contactsSince = 0L
+    private var contactsSince = startUp.contactsSince
     private var slotsLeft = 0
     private val channels = ArrayList<Channel>()
+    private val unansweredSlots = HashSet<Int>()
     private var ready = false
     private var warnedAboutOtherMessages = false
     private var selfName = ""
@@ -209,6 +238,8 @@ class CompanionClient(
         current?.let { job ->
             if (now >= deadline) {
                 listener.onLog("No answer from the radio to ${describe(job)}")
+                // Unlike an empty slot, which the radio answers with an error: its channel is unknown.
+                if (job is Job.GetChannel) unansweredSlots.add(job.index)
                 finish(job, answered = false)
             }
         }
@@ -309,17 +340,23 @@ class CompanionClient(
             Job.DeviceQuery -> if (frame is CompanionFrame.Device) {
                 listener.onDevice(frame.info)
                 finish(job)
-                slotsLeft = frame.info.maxChannels.takeIf { it > 0 } ?: LEGACY_CHANNEL_SLOTS
-                channels.clear()
                 enqueue(Job.Contacts)
-                for (index in 0 until slotsLeft) enqueue(Job.GetChannel(index))
+                if (startUp.readChannels) {
+                    slotsLeft = frame.info.maxChannels.takeIf { it > 0 } ?: LEGACY_CHANNEL_SLOTS
+                    channels.clear()
+                    unansweredSlots.clear()
+                    for (index in 0 until slotsLeft) enqueue(Job.GetChannel(index))
+                }
                 enqueue(Job.Sync)
+                // Without channel slots to read, start-up is done once these are queued.
+                if (!startUp.readChannels) becomeReady()
             }
             Job.Contacts -> when (frame) {
                 CompanionFrame.ContactsStart -> extend()
                 is CompanionFrame.ContactsEnd -> {
                     if (frame.lastModified > contactsSince) contactsSince = frame.lastModified
                     finish(job)
+                    listener.onContactsRead(contactsSince)
                 }
                 else -> Unit
             }
@@ -409,14 +446,20 @@ class CompanionClient(
             is Job.GetChannel -> {
                 slotsLeft--
                 if (slotsLeft == 0) {
-                    ready = true
+                    if (unansweredSlots.isNotEmpty()) listener.onChannelSlotsUnanswered(unansweredSlots.toSet())
                     listener.onChannels(channels.sortedBy { it.index })
-                    requestBattery()
+                    becomeReady()
                 }
             }
             else -> Unit
         }
         pump()
+    }
+
+    /** Start-up is over: messages can be sent, and notices of new messages and adverts acted on. */
+    private fun becomeReady() {
+        ready = true
+        requestBattery()
     }
 
     private fun enqueue(job: Job) {

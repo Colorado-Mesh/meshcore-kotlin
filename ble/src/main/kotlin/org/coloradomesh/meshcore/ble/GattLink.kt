@@ -31,7 +31,9 @@ import java.util.UUID
  * Connecting waits a moment first and is tried up to [connectTries] times, 3 unless the caller
  * asks for more. Android, Samsung devices especially, often fails a first connection with status
  * 133, and more so straight after a scan has stopped; the next try usually works. Giving up after
- * one try made it look as if a radio had to be tapped several times.
+ * one try made it look as if a radio had to be tapped several times. A link that drops while it
+ * is being set up (finding the service, sizing packets, turning on notifications) counts as a
+ * failed try too: WearMesh saw a radio connect, not answer the packet size request, and drop.
  *
  * A link is used once. After [Events.onClosed] make a new one to reconnect.
  */
@@ -103,6 +105,9 @@ class GattLink(
             it.close()
         }
         gatt = null
+        toRadio = null
+        fromRadio = null
+        mtu = DEFAULT_MTU
         if (attempts < connectTries) {
             events.onLog("Connection try $attempts failed ($why); trying again")
             handler.postDelayed({ attempt(device) }, RETRY_PAUSE_MS)
@@ -158,10 +163,14 @@ class GattLink(
                 limit(DISCOVER_MS) { shutdown("Service discovery did not finish") }
                 // A short pause lets the connection settle; some phones fail discovery without it.
                 handler.postDelayed({
-                    if (step == Step.DISCOVERING && !g.discoverServices()) {
+                    if (step == Step.DISCOVERING && gatt === g && !g.discoverServices()) {
                         shutdown("Android refused to start service discovery")
                     }
                 }, SETTLE_MS)
+            } else if (step in SET_UP_STEPS) {
+                // Not up yet, so nothing has been delivered: start again as another try.
+                step = Step.CONNECTING
+                connectFailed(g.device, "connection lost during set-up, ${describeStatus(status)}")
             } else {
                 shutdown("Connection lost (${describeStatus(status)})")
             }
@@ -352,6 +361,7 @@ class GattLink(
         19 -> "status 19, the radio closed the connection"
         22 -> "status 22, this device closed the connection"
         133 -> "status 133, a general Bluetooth error"
+        147 -> "status 147, the connection timed out"
         else -> "status $status"
     }
 
@@ -364,6 +374,12 @@ class GattLink(
         private const val DEFAULT_MTU = 23
         private const val WANTED_MTU = 512
         private const val ATT_HEADER_BYTES = 3
+
+        /**
+         * Steps after connecting and before the link is ready, where a drop is retried. Pairing is
+         * left out: Android may drop and remake the link itself while pairing.
+         */
+        private val SET_UP_STEPS = setOf(Step.DISCOVERING, Step.SIZING, Step.SUBSCRIBING)
 
         /** Statuses that mean the radio wants an encrypted, paired link first. */
         private val PAIRING_NEEDED = setOf(5, 8, 15, 137)

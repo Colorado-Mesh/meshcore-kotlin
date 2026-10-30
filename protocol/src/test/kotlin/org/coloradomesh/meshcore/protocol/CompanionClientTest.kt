@@ -13,6 +13,7 @@ class CompanionClientTest {
     private val results = ArrayList<Pair<String, Boolean>>()
     private val directs = ArrayList<DirectMessage>()
     private val directResults = ArrayList<Pair<String, DirectOutcome>>()
+    private val refusals = ArrayList<Int?>()
     private var channels: List<Channel>? = null
     private val batteries = ArrayList<Int>()
     private val positions = ArrayList<Pair<String, TelemetryOutcome>>()
@@ -33,6 +34,7 @@ class CompanionClientTest {
             override fun onDirectResult(id: Long, publicKeyHex: String, text: String, outcome: DirectOutcome) {
                 directResults.add(text to outcome)
             }
+            override fun onDirectRefused(id: Long, errorCode: Int?) { refusals.add(errorCode) }
             override fun onBattery(millivolts: Int) { batteries.add(millivolts) }
             override fun onTelemetry(publicKeyHex: String, outcome: TelemetryOutcome) { positions.add(publicKeyHex.take(2) to outcome) }
             override fun onQueueEmpty() { queueEmpties++ }
@@ -457,6 +459,17 @@ class CompanionClientTest {
         client.sendDirectText(ann, "hello")
         client.onFrame(byteArrayOf(1, 2))
         assertEquals(listOf("hello" to DirectOutcome.REFUSED), directResults)
+        assertEquals(listOf<Int?>(CompanionClient.ERROR_NOT_FOUND), refusals)
+    }
+
+    @Test
+    fun aDirectMessageTheRadioNeverAnswersIsRefusedWithNoCode() {
+        startUp()
+        client.sendDirectText(ann, "hello")
+        now += 7_000
+        client.tick()
+        assertEquals(listOf("hello" to DirectOutcome.REFUSED), directResults)
+        assertEquals(listOf<Int?>(null), refusals)
     }
 
     @Test

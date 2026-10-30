@@ -115,6 +115,13 @@ class CompanionClient(
         /** The radio accepted, or did not accept, a message handed to [sendChannelText]. */
         fun onSendResult(channelIndex: Int, text: String, accepted: Boolean) {}
 
+        /**
+         * Why the radio refused the direct message [id], just before [onDirectResult] reports it
+         * [DirectOutcome.REFUSED]: the radio's error code, or null when it gave no answer.
+         * [ERROR_NOT_FOUND] means it has no contact for the recipient.
+         */
+        fun onDirectRefused(id: Long, errorCode: Int?) {}
+
         /** How the direct message [id] from [sendDirectText] ended. Called once per message. */
         fun onDirectResult(id: Long, publicKeyHex: String, text: String, outcome: DirectOutcome) {}
 
@@ -342,7 +349,7 @@ class CompanionClient(
             // An empty or missing channel slot is reported as an error, which is not worth a log line.
             if (job !is Job.GetChannel) listener.onLog("The radio refused ${describe(job)} (error ${frame.code})")
             if (job == Job.Battery) batteryRefused = true
-            finish(job, answered = false)
+            finish(job, answered = false, errorCode = frame.code)
             return
         }
         when (job) {
@@ -466,12 +473,15 @@ class CompanionClient(
     private fun channelKey(index: Int, text: String) = "$index|$text"
 
     /** Ends [job], whether the radio answered it or not, and starts the next one. */
-    private fun finish(job: Job, answered: Boolean = true) {
+    private fun finish(job: Job, answered: Boolean = true, errorCode: Int? = null) {
         current = null
         when (job) {
             is Job.SendText -> listener.onSendResult(job.index, job.text, answered)
             is Job.SendDirect -> if (!answered) {
-                outbound.remove(job.id)?.let { listener.onDirectResult(job.id, it.publicKeyHex, it.text, DirectOutcome.REFUSED) }
+                outbound.remove(job.id)?.let {
+                    listener.onDirectRefused(job.id, errorCode)
+                    listener.onDirectResult(job.id, it.publicKeyHex, it.text, DirectOutcome.REFUSED)
+                }
             }
             is Job.Telemetry -> if (!answered) listener.onTelemetry(job.publicKeyHex, TelemetryOutcome.NotSent)
             is Job.GetChannel -> {
@@ -550,6 +560,9 @@ class CompanionClient(
     }
 
     companion object {
+        /** The radio's error for a command naming a contact or item it does not have. */
+        const val ERROR_NOT_FOUND = 2
+
         /** Tries in all for a direct message, the first included. */
         const val MAX_DIRECT_ATTEMPTS = 3
 

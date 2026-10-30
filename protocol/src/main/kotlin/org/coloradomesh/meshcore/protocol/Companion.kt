@@ -144,6 +144,9 @@ sealed interface CompanionFrame {
 
     data object NoMoreMessages : CompanionFrame
 
+    /** The radio's clock, in Unix seconds. */
+    data class CurrentTime(val seconds: Long) : CompanionFrame
+
     /** The radio has queued messages to collect. */
     data object MessagesWaiting : CompanionFrame
 
@@ -159,8 +162,9 @@ sealed interface CompanionFrame {
  * The MeshCore companion protocol, as documented at docs.meshcore.io/companion_protocol.
  * Over Bluetooth each write and each notification carries exactly one frame.
  *
- * Only commands that read from the radio, send a message, or ask a node for its telemetry belong here. The bridge never
- * changes a radio's configuration, so nothing in this file builds a command that would.
+ * Only commands that read from the radio, send a message, ask a node for its telemetry, or set the
+ * radio's clock belong here. Nothing in this file builds a command that would change any other part
+ * of a radio's configuration.
  */
 object CompanionFrames {
     /** The protocol version this app asks the radio to speak. */
@@ -176,6 +180,8 @@ object CompanionFrames {
     private const val CMD_SEND_DIRECT_TEXT = 0x02
     private const val CMD_SEND_CHANNEL_TEXT = 0x03
     private const val CMD_GET_CONTACTS = 0x04
+    private const val CMD_GET_DEVICE_TIME = 0x05
+    private const val CMD_SET_DEVICE_TIME = 0x06
     private const val CMD_SYNC_NEXT_MESSAGE = 0x0A
     private const val CMD_GET_CHANNEL = 0x1F
     private const val CMD_GET_BATTERY = 0x14
@@ -186,6 +192,7 @@ object CompanionFrames {
     private const val RESP_SENT = 0x06
     private const val RESP_CONTACT_MSG = 0x07
     private const val RESP_CHANNEL_MSG = 0x08
+    private const val RESP_CURR_TIME = 0x09
     private const val RESP_NO_MORE_MESSAGES = 0x0A
     private const val RESP_BATTERY = 0x0C
     private const val RESP_CONTACT_MSG_V3 = 0x10
@@ -235,6 +242,15 @@ object CompanionFrames {
         if (since > 0) byteArrayOf(CMD_GET_CONTACTS.toByte()) + le32(since) else byteArrayOf(CMD_GET_CONTACTS.toByte())
 
     fun getChannel(index: Int): ByteArray = byteArrayOf(CMD_GET_CHANNEL.toByte(), index.toByte())
+
+    /** Asks for the radio's clock; the radio answers with [CompanionFrame.CurrentTime]. */
+    fun getDeviceTime(): ByteArray = byteArrayOf(CMD_GET_DEVICE_TIME.toByte())
+
+    /**
+     * Sets the radio's clock to [seconds] (Unix time); the radio answers with [CompanionFrame.Ok],
+     * or an error, which some firmware gives for a time earlier than its own.
+     */
+    fun setDeviceTime(seconds: Long): ByteArray = byteArrayOf(CMD_SET_DEVICE_TIME.toByte()) + le32(seconds)
 
     /** Asks for the battery voltage; the radio answers with [CompanionFrame.Battery]. */
     fun getBattery(): ByteArray = byteArrayOf(CMD_GET_BATTERY.toByte())
@@ -293,6 +309,7 @@ object CompanionFrames {
             RESP_CONTACT_MSG_V3 -> parseDirectText(frame, 4)
             RESP_CHANNEL_DATA -> CompanionFrame.OtherMessage(code)
             RESP_NO_MORE_MESSAGES -> CompanionFrame.NoMoreMessages
+            RESP_CURR_TIME -> if (frame.size >= 5) CompanionFrame.CurrentTime(uint32(frame, 1)) else null
             // Then the storage used and available, which the bridge does not need.
             RESP_BATTERY -> if (frame.size >= 3) CompanionFrame.Battery(uint16(frame, 1)) else null
             PUSH_MSG_WAITING -> CompanionFrame.MessagesWaiting

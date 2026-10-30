@@ -54,7 +54,7 @@ sealed interface TelemetryOutcome {
  *   the log says so.
  *
  * It only reads from the radio, sends text and asks tracked nodes for their position. It never changes the radio's settings,
- * channels, contacts, paths or clock.
+ * channels, contacts or paths, nor its clock unless the app asks for that with [StartUp.clockTolerance].
  *
  * Thread-safe. Listener calls are made while the client is locked, so they must not block.
  */
@@ -76,8 +76,12 @@ class CompanionClient(
      * channel slots with [readChannels] false; [Listener.onChannels] is then not called. Contacts
      * removed from the radio are not reported by a request for changes, so such an app should
      * still read everything from time to time.
+     *
+     * With [clockTolerance] set, the radio's clock is read too, right after the device query, and
+     * reported to [Listener.onRadioClock]; when it differs from this client's clock by more than
+     * that many seconds, it is set to this client's. Off by default: the radio's clock is left alone.
      */
-    data class StartUp(val contactsSince: Long = 0, val readChannels: Boolean = true)
+    data class StartUp(val contactsSince: Long = 0, val readChannels: Boolean = true, val clockTolerance: Long? = null)
 
     interface Listener {
         fun onLog(message: String) {}
@@ -114,6 +118,13 @@ class CompanionClient(
         /** How the direct message [id] from [sendDirectText] ended. Called once per message. */
         fun onDirectResult(id: Long, publicKeyHex: String, text: String, outcome: DirectOutcome) {}
 
+        /**
+         * The radio's clock at start-up, when [StartUp.clockTolerance] asks for it: [radioSeconds]
+         * and this client's [clientSeconds], both Unix time. [setting] is true when the client is
+         * now setting the radio's clock to its own; the log says how that went.
+         */
+        fun onRadioClock(radioSeconds: Long, clientSeconds: Long, setting: Boolean) {}
+
         /** The radio's battery voltage, at start-up and then every [BATTERY_INTERVAL_MS]; zero if it cannot measure it. */
         fun onBattery(millivolts: Int) {}
 
@@ -137,6 +148,10 @@ class CompanionClient(
         data class SendText(val index: Int, val text: String) : Job
         data class SendDirect(val id: Long) : Job
         data object Battery : Job
+        data object GetTime : Job
+
+        /** Set the radio's clock; [behindSeconds] is how far behind this client's it was (negative: ahead). */
+        data class SetTime(val behindSeconds: Long) : Job
         data class Telemetry(val publicKeyHex: String) : Job
     }
 
@@ -340,6 +355,7 @@ class CompanionClient(
             Job.DeviceQuery -> if (frame is CompanionFrame.Device) {
                 listener.onDevice(frame.info)
                 finish(job)
+                if (startUp.clockTolerance != null) enqueue(Job.GetTime)
                 enqueue(Job.Contacts)
                 if (startUp.readChannels) {
                     slotsLeft = frame.info.maxChannels.takeIf { it > 0 } ?: LEGACY_CHANNEL_SLOTS
@@ -404,6 +420,21 @@ class CompanionClient(
             }
             Job.Battery -> if (frame is CompanionFrame.Battery) {
                 listener.onBattery(frame.millivolts)
+                finish(job)
+            }
+            Job.GetTime -> if (frame is CompanionFrame.CurrentTime) {
+                val ours = clock() / 1000
+                val behind = ours - frame.seconds
+                val tolerance = startUp.clockTolerance ?: Long.MAX_VALUE
+                val setting = behind > tolerance || -behind > tolerance
+                listener.onRadioClock(frame.seconds, ours, setting)
+                // Ahead of the rest of start-up, so it is set before anything else is sent.
+                if (setting) queue.addFirst(Job.SetTime(behind))
+                finish(job)
+            }
+            is Job.SetTime -> if (frame == CompanionFrame.Ok) {
+                val which = if (job.behindSeconds > 0) "behind" else "ahead"
+                listener.onLog("Set the radio's clock to this device's; it was ${kotlin.math.abs(job.behindSeconds)} s $which")
                 finish(job)
             }
             is Job.Telemetry -> if (frame is CompanionFrame.Sent) {
@@ -499,6 +530,9 @@ class CompanionClient(
         }
         Job.Battery -> CompanionFrames.getBattery()
         is Job.Telemetry -> CompanionFrames.telemetryRequest(job.publicKeyHex)
+        Job.GetTime -> CompanionFrames.getDeviceTime()
+        // The time when it is sent, not when it was queued.
+        is Job.SetTime -> CompanionFrames.setDeviceTime(clock() / 1000)
     }
 
     private fun describe(job: Job): String = when (job) {
@@ -511,6 +545,8 @@ class CompanionClient(
         is Job.SendDirect -> "a direct message"
         Job.Battery -> "the battery request"
         is Job.Telemetry -> "a position request"
+        Job.GetTime -> "the request for its clock"
+        is Job.SetTime -> "setting its clock"
     }
 
     companion object {

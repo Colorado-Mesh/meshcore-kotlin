@@ -12,7 +12,7 @@ Kotlin code for talking to a [MeshCore](https://docs.meshcore.io/) companion rad
 | `protocol` | `org.coloradomesh.meshcore.protocol` | The companion protocol in pure Kotlin, with no Android dependencies: the frame codec (`Companion.kt`), the command queue that runs a session with a radio (`CompanionClient.kt`), telemetry (`CayenneLpp.kt`), battery estimates (`RadioBattery.kt`), `@[Name]` replies (`ChannelReplies.kt`) and MECP emergency messages (`Mecp.kt`). Unit tests run on the JVM. |
 | `ble` | `org.coloradomesh.meshcore.ble` | The Bluetooth LE side, as an Android library: `GattLink` (one connection, every step queued and time-limited, retries, PIN pairing), `RadioScanner`, and `RadioSession`, which joins a link to a protocol client. |
 
-The code only reads from a radio, sends text, and asks tracked nodes for their position. Nothing in it changes a radio's settings, channels, contacts, paths or keys.
+The code only reads from a radio, sends text, and asks tracked nodes for their position. Nothing in it changes a radio's settings, channels, contacts, paths or keys. The one exception is the radio's clock, which an app can ask to have set from its own when it is off by more than a given number of seconds (`CompanionClient.StartUp.clockTolerance`, off by default).
 
 ## Using it from an app
 

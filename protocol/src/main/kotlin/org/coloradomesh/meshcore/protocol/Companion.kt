@@ -41,7 +41,13 @@ data class Contact(
     val lastAdvert: Long,
     val latitude: Double,
     val longitude: Double,
+    /** The radio's flags for this contact; see [isFavourite]. */
+    val flags: Int = 0,
 ) {
+    /** Marked as a favourite on the radio (flag bit 0, set by the MeshCore apps). */
+    val isFavourite: Boolean
+        get() = (flags and FLAG_FAVOURITE) != 0
+
     /** A node that shares no position reports exactly 0, 0. */
     val hasPosition: Boolean
         get() = (latitude != 0.0 || longitude != 0.0) && latitude in -90.0..90.0 && longitude in -180.0..180.0
@@ -51,6 +57,8 @@ data class Contact(
         const val TYPE_REPEATER = 2
         const val TYPE_ROOM_SERVER = 3
         const val TYPE_SENSOR = 4
+
+        const val FLAG_FAVOURITE = 0x01
     }
 }
 
@@ -334,6 +342,7 @@ object CompanionFrames {
             lastAdvert = uint32(frame, 132),
             latitude = int32(frame, 136) / 1e6,
             longitude = int32(frame, 140) / 1e6,
+            flags = frame[34].toInt() and 0xFF,
         )
     }
 

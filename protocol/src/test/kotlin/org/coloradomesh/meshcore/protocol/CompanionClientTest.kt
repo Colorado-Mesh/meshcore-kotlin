@@ -85,8 +85,8 @@ class CompanionClientTest {
 
     private fun deviceInfo(slots: Int) = ByteArray(82).also { it[0] = 0x0D; it[1] = 9; it[3] = slots.toByte() }
 
-    private fun contact(code: Int, name: String, type: Int, lat: Int, lon: Int) =
-        byteArrayOf(code.toByte()) + ByteArray(32) { 0x11 } + byteArrayOf(type.toByte(), 0, 0) + ByteArray(64) +
+    private fun contact(code: Int, name: String, type: Int, lat: Int, lon: Int, flags: Int = 0) =
+        byteArrayOf(code.toByte()) + ByteArray(32) { 0x11 } + byteArrayOf(type.toByte(), flags.toByte(), 0) + ByteArray(64) +
             name.toByteArray().copyOf(32) + le32(1_700_000_000) + le32(lat.toLong()) + le32(lon.toLong()) + le32(1_700_000_500)
 
     private fun channelInfo(index: Int, name: String, programmed: Boolean = true) =
@@ -136,6 +136,18 @@ class CompanionClientTest {
         assertEquals(-104.9903, repeater.longitude, 1e-9)
         assertTrue(repeater.hasPosition)
         assertTrue(log.isEmpty())
+    }
+
+    @Test
+    fun readsWhetherAContactIsAFavourite() {
+        client.start()
+        client.onFrame(selfInfo())
+        client.onFrame(deviceInfo(slots = 1))
+        client.onFrame(byteArrayOf(2) + le32(2))
+        client.onFrame(contact(3, "Ann", Contact.TYPE_COMPANION, 0, 0, flags = 0x01))
+        client.onFrame(contact(3, "Bo", Contact.TYPE_COMPANION, 0, 0, flags = 0x02))
+        assertEquals(listOf(true, false), contacts.map { it.isFavourite })
+        assertEquals(listOf(1, 2), contacts.map { it.flags })
     }
 
     @Test

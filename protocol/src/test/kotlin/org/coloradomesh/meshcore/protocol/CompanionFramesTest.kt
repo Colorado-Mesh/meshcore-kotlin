@@ -212,4 +212,14 @@ class CompanionFramesTest {
         val other = gps.copyOf().also { it[0] = 2 }
         assertNull((CompanionFrames.parse(telemetryReply(other)) as CompanionFrame.TelemetryReply).telemetry.position)
     }
+
+    @Test
+    fun clockFrames() {
+        assertArrayEquals(byteArrayOf(0x05), CompanionFrames.getDeviceTime())
+        assertArrayEquals(byteArrayOf(0x06) + le32(1_800_000_000), CompanionFrames.setDeviceTime(1_800_000_000))
+        assertEquals(CompanionFrame.CurrentTime(1_800_000_000), CompanionFrames.parse(byteArrayOf(0x09) + le32(1_800_000_000)))
+        // A time past 2038 still reads as positive: the field is unsigned.
+        assertEquals(CompanionFrame.CurrentTime(3_000_000_000), CompanionFrames.parse(byteArrayOf(0x09) + le32(-1_294_967_296)))
+        assertTrue(CompanionFrames.parse(byteArrayOf(0x09, 1, 2)) is CompanionFrame.Other)
+    }
 }

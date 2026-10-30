@@ -58,6 +58,29 @@ class CompanionClientTest {
 
     private fun le32(value: Long) = ByteArray(4) { (value shr (8 * it)).toByte() }
 
+    private val clocks = ArrayList<Triple<Long, Long, Boolean>>()
+
+    /** A client that checks the radio's clock and sets it when more than a minute off. */
+    private val clockClient = CompanionClient(
+        transmit = { sent.add(it) },
+        listener = object : CompanionClient.Listener {
+            override fun onLog(message: String) { log.add(message) }
+            override fun onRadioClock(radioSeconds: Long, clientSeconds: Long, setting: Boolean) {
+                clocks.add(Triple(radioSeconds, clientSeconds, setting))
+            }
+        },
+        clock = { now },
+        startUp = CompanionClient.StartUp(clockTolerance = 60),
+    )
+
+    /** Takes [clockClient] through the greeting and device query, to its clock request. */
+    private fun clockStartUp() {
+        clockClient.start()
+        clockClient.onFrame(selfInfo())
+        clockClient.onFrame(deviceInfo(slots = 1))
+        assertArrayEquals(byteArrayOf(0x05), lastSent())
+    }
+
     private fun selfInfo() = ByteArray(58).also { it[0] = 5 } + "Radio".toByteArray()
 
     private fun deviceInfo(slots: Int) = ByteArray(82).also { it[0] = 0x0D; it[1] = 9; it[3] = slots.toByte() }
@@ -556,5 +579,42 @@ class CompanionClientTest {
     fun aFullyAnsweredChannelListNamesNoSlots() {
         startUp()
         assertTrue(unanswered.isEmpty())
+    }
+
+    @Test
+    fun theRadiosClockIsLeftAloneByDefault() {
+        startUp()
+        assertTrue(sent.none { it[0].toInt() == 0x05 || it[0].toInt() == 0x06 })
+    }
+
+    @Test
+    fun aRadioClockMoreThanTheToleranceOffIsSet() {
+        clockStartUp()
+        val ours = now / 1000
+        clockClient.onFrame(byteArrayOf(0x09) + le32(ours - 300))
+        assertEquals(listOf(Triple(ours - 300, ours, true)), clocks)
+        assertArrayEquals(byteArrayOf(0x06) + le32(ours), lastSent())
+        clockClient.onFrame(byteArrayOf(0))
+        assertEquals("Set the radio's clock to this device's; it was 300 s behind", log.single())
+        // Then the rest of start-up.
+        assertArrayEquals(byteArrayOf(4), lastSent())
+    }
+
+    @Test
+    fun aRadioClockWithinTheToleranceIsOnlyReported() {
+        clockStartUp()
+        val ours = now / 1000
+        clockClient.onFrame(byteArrayOf(0x09) + le32(ours + 45))
+        assertEquals(listOf(Triple(ours + 45, ours, false)), clocks)
+        assertArrayEquals(byteArrayOf(4), lastSent())
+    }
+
+    @Test
+    fun aRefusedClockSettingIsLoggedAndStartUpCarriesOn() {
+        clockStartUp()
+        clockClient.onFrame(byteArrayOf(0x09) + le32(now / 1000 + 3_600))
+        clockClient.onFrame(byteArrayOf(1, 6))
+        assertEquals("The radio refused setting its clock (error 6)", log.single())
+        assertArrayEquals(byteArrayOf(4), lastSent())
     }
 }

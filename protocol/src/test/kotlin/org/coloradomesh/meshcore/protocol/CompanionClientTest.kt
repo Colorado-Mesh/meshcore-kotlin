@@ -18,6 +18,7 @@ class CompanionClientTest {
     private val batteries = ArrayList<Int>()
     private val positions = ArrayList<Pair<String, TelemetryOutcome>>()
     private var queueEmpties = 0
+    private val startUpFailures = ArrayList<String>()
     private val contactsRead = ArrayList<Long>()
     private val unanswered = ArrayList<Set<Int>>()
     private var now = 1_800_000_000_000L
@@ -40,6 +41,7 @@ class CompanionClientTest {
             override fun onQueueEmpty() { queueEmpties++ }
             override fun onContactsRead(lastModified: Long) { contactsRead.add(lastModified) }
             override fun onChannelSlotsUnanswered(slots: Set<Int>) { unanswered.add(slots) }
+            override fun onStartUpFailed(what: String) { startUpFailures.add(what) }
         },
         clock = { now },
     )
@@ -202,6 +204,49 @@ class CompanionClientTest {
         now += 7_000
         client.tick()
         assertEquals(listOf("one" to false, "two" to false), results)
+    }
+
+    @Test
+    fun aLateGreetingAnswerCountsForTheNextTry() {
+        // As in the M4 overnight log: the radio's answer came about 8 s after the greeting.
+        client.start()
+        now += 7_000
+        client.tick()
+        assertEquals(listOf(1, 1), sent.map { it[0].toInt() })
+        assertEquals("No answer from the radio to the opening greeting; asking again (try 2 of 3)", log.single())
+        client.onFrame(selfInfo())
+        assertArrayEquals(byteArrayOf(0x16, 3), lastSent())
+        // The second try's own answer, arriving while the device query waits, changes nothing.
+        client.onFrame(selfInfo())
+        assertEquals(3, sent.size)
+        assertEquals(1, log.size)
+        assertTrue(startUpFailures.isEmpty())
+    }
+
+    @Test
+    fun aRadioThatNeverAnswersFailsStartUpAfterThreeTries() {
+        client.start()
+        repeat(5) {
+            now += 7_000
+            client.tick()
+        }
+        assertEquals(CompanionClient.START_TRIES, sent.size)
+        assertEquals(listOf("the opening greeting"), startUpFailures)
+    }
+
+    @Test
+    fun anUnansweredDeviceQueryIsTriedAgainToo() {
+        client.start()
+        client.onFrame(selfInfo())
+        now += 7_000
+        client.tick()
+        assertArrayEquals(byteArrayOf(0x16, 3), lastSent())
+        assertEquals(listOf(1, 0x16, 0x16), sent.map { it[0].toInt() })
+        now += 7_000
+        client.tick()
+        now += 7_000
+        client.tick()
+        assertEquals(listOf("the device query"), startUpFailures)
     }
 
     @Test

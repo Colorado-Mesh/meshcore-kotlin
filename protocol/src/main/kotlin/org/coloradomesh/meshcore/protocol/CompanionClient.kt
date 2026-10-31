@@ -144,6 +144,13 @@ class CompanionClient(
          * disconnect here. Not called when the radio refuses or does not answer the request.
          */
         fun onQueueEmpty() {}
+
+        /**
+         * Start-up cannot finish: the radio did not answer [what] (the opening greeting or the
+         * device query) in [START_TRIES] tries. Nothing more is sent on this connection, so an app
+         * should disconnect and try again later rather than wait.
+         */
+        fun onStartUpFailed(what: String) {}
     }
 
     private sealed interface Job {
@@ -211,6 +218,9 @@ class CompanionClient(
         enqueue(Job.AppStart)
     }
 
+    /** Which try of the current start-up command this is. */
+    private var startTry = 1
+
     /** Queue a channel message. The result arrives at [Listener.onSendResult]. */
     @Synchronized
     fun sendChannelText(channelIndex: Int, text: String) {
@@ -258,8 +268,20 @@ class CompanionClient(
     fun tick() {
         val now = clock()
         current?.let { job ->
-            if (now >= deadline) {
+            if (now >= deadline && (job == Job.AppStart || job == Job.DeviceQuery) && startTry < START_TRIES) {
+                // A radio busy with the mesh, or just disconnected from by another check-in, can be
+                // slow to answer; an answer that comes late still counts for the try after it.
+                startTry++
+                listener.onLog("No answer from the radio to ${describe(job)}; asking again (try $startTry of $START_TRIES)")
+                extend()
+                transmit(frameFor(job))
+            } else if (now >= deadline) {
                 listener.onLog("No answer from the radio to ${describe(job)}")
+                if (job == Job.AppStart || job == Job.DeviceQuery) {
+                    finish(job, answered = false)
+                    listener.onStartUpFailed(describe(job))
+                    return@let
+                }
                 // Unlike an empty slot, which the radio answers with an error: its channel is unknown.
                 if (job is Job.GetChannel) unansweredSlots.add(job.index)
                 finish(job, answered = false)
@@ -475,6 +497,7 @@ class CompanionClient(
     /** Ends [job], whether the radio answered it or not, and starts the next one. */
     private fun finish(job: Job, answered: Boolean = true, errorCode: Int? = null) {
         current = null
+        if (job == Job.AppStart || job == Job.DeviceQuery) startTry = 1
         when (job) {
             is Job.SendText -> listener.onSendResult(job.index, job.text, answered)
             is Job.SendDirect -> if (!answered) {
@@ -578,6 +601,9 @@ class CompanionClient(
 
         private const val APP_NAME = "MeshCore"
         private const val TIMEOUT_MS = 6_000L
+
+        /** How many times the opening greeting, and then the device query, are sent before start-up fails. */
+        const val START_TRIES = 3
         private const val MAX_QUEUED_SENDS = 5
         private const val MAX_OUTSTANDING_DIRECTS = 5
         private const val PUSH_CODES_START = 0x80

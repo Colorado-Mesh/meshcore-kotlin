@@ -412,6 +412,39 @@ class CompanionClientTest {
         assertEquals(listOf(true, false), results)
         assertEquals(1, sent.count { it[0].toInt() == 0x09 })
         assertTrue(log.last().startsWith("Not saving Bob to the radio"))
+        // While saves are off, a new one is refused at once.
+        assertFalse(c.saveContact(Contact("cc".repeat(32), Contact.TYPE_COMPANION, "Cy", 0, 0.0, 0.0)))
+    }
+
+    @Test
+    fun aListenerThatRetriesWhileSavesAreOffDoesNotLoop() {
+        var allowed = true
+        var tries = 0
+        lateinit var c: CompanionClient
+        c = CompanionClient(
+            transmit = { sent.add(it) },
+            listener = object : CompanionClient.Listener {
+                override fun onContactSaved(publicKeyHex: String, saved: Boolean, errorCode: Int?) {
+                    if (!saved && tries++ < 1_000) c.saveContact(Contact(publicKeyHex, Contact.TYPE_COMPANION, "again", 0, 0.0, 0.0))
+                }
+            },
+            clock = { now },
+            startUp = CompanionClient.StartUp(readChannels = false),
+            savesAllowed = { allowed },
+        )
+        c.start()
+        c.onFrame(selfInfo())
+        c.onFrame(deviceInfo(slots = 0))
+        c.onFrame(byteArrayOf(2) + le32(0))
+        c.onFrame(byteArrayOf(4) + le32(0))
+        c.onFrame(byteArrayOf(0x0A))
+        c.onFrame(battery(3_900))
+        c.saveContact(Contact("aa".repeat(32), Contact.TYPE_COMPANION, "Ann", 0, 0.0, 0.0))
+        c.saveContact(Contact("bb".repeat(32), Contact.TYPE_COMPANION, "Bob", 0, 0.0, 0.0))
+        allowed = false
+        c.onFrame(byteArrayOf(0))
+        // Bob's save is dropped once; the listener's retry is refused rather than queued again.
+        assertEquals(1, tries)
     }
 
     @Test

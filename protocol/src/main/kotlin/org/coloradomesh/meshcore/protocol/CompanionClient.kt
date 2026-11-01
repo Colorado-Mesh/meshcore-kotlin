@@ -268,7 +268,7 @@ class CompanionClient(
      * only when its user has asked for that. It may be called as soon as [start] has been: a save
      * asked for during start-up is held until start-up has finished, then goes in turn, and a
      * message queued after it goes after it. False, with no listener call, before [start] or for
-     * a key that is not 64 lowercase hex characters, after the link has closed ([onLinkClosed]),
+     * a key that is not 64 lowercase hex characters, while `savesAllowed` says no, after the link has closed ([onLinkClosed]),
      * or once a save on this connection has gone unanswered (see [finish]); otherwise
      * [Listener.onContactSaved] says how it went, once, also when start-up fails or the link
      * closes first.
@@ -276,6 +276,9 @@ class CompanionClient(
     @Synchronized
     fun saveContact(contact: Contact): Boolean {
         if (!started || savesStopped || contact.publicKeyHex.length != 64 || !contact.publicKeyHex.all { it in "0123456789abcdef" }) return false
+        // Refused at once while saves are off, so a listener that tries again on each "not saved"
+        // cannot loop through pump.
+        if (!savesAllowed()) return false
         if (ready) enqueue(Job.SaveContact(contact)) else heldSaves.add(contact)
         return true
     }

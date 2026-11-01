@@ -115,8 +115,8 @@ data class DirectMessage(
     val snr: Double? = null,
     /**
      * Repeaters it passed through when it was flooded across the mesh: 0 when the radio heard the
-     * sender itself. Null when it came along a known route, which the radio gives no count for, or
-     * on firmware too old to say.
+     * sender itself. Null when it came along a known route, which the radio gives no count for.
+     * Both layouts carry the path length, so the old one gives this too; only [snr] is new-only.
      */
     val hops: Int? = null,
 )

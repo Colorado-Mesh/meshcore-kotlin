@@ -150,6 +150,19 @@ class CompanionFramesTest {
     }
 
     @Test
+    fun theOldLayoutsGiveHopsButNoSignal() {
+        val channel = (
+            CompanionFrames.parse(byteArrayOf(0x08, 3, 2, 0) + le32(1_700_000_456) + "Alpha: on air".toByteArray()) as CompanionFrame.ChannelText
+            ).message
+        assertEquals(ChannelMessage(3, "Alpha: on air", 1_700_000_456, snr = null, hops = 2), channel)
+        val direct = (
+            CompanionFrames.parse(byteArrayOf(0x07) + ByteArray(6) { 0x11 } + byteArrayOf(1, 0) + le32(5) + "ok".toByteArray()) as CompanionFrame.DirectText
+            ).message
+        assertEquals(null, direct.snr)
+        assertEquals(1, direct.hops)
+    }
+
+    @Test
     fun readsAChannelMessageInTheOldLayout() {
         // Code, then channel index, path length, text type, timestamp, text: no signal bytes.
         val frame = byteArrayOf(0x08, 3, 0xFF.toByte(), 0) + le32(1_700_000_456) + "Alpha: on air".toByteArray()

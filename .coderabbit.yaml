@@ -32,8 +32,13 @@ reviews:
         Wear OS watch, minSdk 33, battery-limited). Flag any change that would help one and
         break the other, and any public API change that the README's usage section or either
         app would need to follow. Never write to the radio's configuration: no channels,
-        contacts, settings, advertised position, paths or keys. Focus on correctness, thread
-        safety, resource leaks and lost or duplicated messages.
+        settings, advertised position, paths or keys. Two writes are allowed, each only when an
+        app calls it on its user's request: setting the radio's clock (StartUp.clockTolerance)
+        and saving a contact (CompanionClient.saveContact, command 9), which WearMesh does
+        behind a setting that is off by default, to keep contacts its user messages. Flag any
+        other write, any caller of these that is not behind a user's choice, and any save that
+        changes a contact's route rather than keeping the radio's or sending none. Focus on
+        correctness, thread safety, resource leaks and lost or duplicated messages.
 
     - path: "protocol/**"
       instructions: |
@@ -41,7 +46,7 @@ reviews:
         check every length and offset before reading, and never let a malformed frame throw out
         of the client. One command is outstanding at a time, each with a time limit; check that
         a queued command cannot stall the queue. Flag any command that sets, adds, removes or
-        resets state on the radio. Undocumented layouts come from the MeshCore firmware source
+        resets state on the radio, other than the two allowed writes above. Undocumented layouts come from the MeshCore firmware source
         (MyMesh.cpp, BaseChatMesh.cpp); ask for a reference when a new one appears. Timing uses
         the injected wall clock, never Thread.sleep or a monotonic clock that stops in sleep.
         ChannelReplies turns "@name" and "@@" into MeshCore's "@[Name]" reply form and must

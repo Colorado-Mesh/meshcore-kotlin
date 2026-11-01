@@ -270,6 +270,42 @@ class CompanionClientTest {
     }
 
     @Test
+    fun aSaveAskedForDuringStartUpWaitsForIt() {
+        val ann = Contact("aa".repeat(32), Contact.TYPE_COMPANION, "Ann", 0, 0.0, 0.0)
+        client.start()
+        assertTrue(client.saveContact(ann))
+        startUpAfterGreeting()
+        // Sent only once start-up has finished, after the battery request it begins with.
+        assertTrue(sent.any { it[0].toInt() == 0x09 })
+        assertTrue(sent.indexOfFirst { it[0].toInt() == 0x09 } > sent.indexOfFirst { it[0].toInt() == 0x0A })
+    }
+
+    @Test
+    fun aHeldSaveIsReportedNotSentWhenStartUpFails() {
+        val ann = Contact("aa".repeat(32), Contact.TYPE_COMPANION, "Ann", 0, 0.0, 0.0)
+        client.start()
+        client.saveContact(ann)
+        repeat(4) {
+            now += 7_000
+            client.tick()
+        }
+        assertTrue(sent.none { it[0].toInt() == 0x09 })
+        assertEquals(listOf(Triple("aa", false, null)), savedContacts)
+        assertEquals(listOf("the opening greeting"), startUpFailures)
+    }
+
+    @Test
+    fun savesStillWaitingAreReportedWhenTheLinkCloses() {
+        startUp()
+        client.saveContact(Contact("aa".repeat(32), Contact.TYPE_COMPANION, "Ann", 0, 0.0, 0.0))
+        client.saveContact(Contact("bb".repeat(32), Contact.TYPE_COMPANION, "Bob", 0, 0.0, 0.0))
+        client.onLinkClosed()
+        assertEquals(listOf(Triple("aa", false, null), Triple("bb", false, null)), savedContacts)
+        client.onLinkClosed()
+        assertEquals(2, savedContacts.size)
+    }
+
+    @Test
     fun aSendBeforeStartUpFinishesIsRefused() {
         client.start()
         client.sendChannelText(0, "early")

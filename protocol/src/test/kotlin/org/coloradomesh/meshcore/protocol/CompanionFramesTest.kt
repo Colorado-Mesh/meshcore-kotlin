@@ -247,6 +247,15 @@ class CompanionFramesTest {
     }
 
     @Test
+    fun aRouteLengthWithoutItsBytesIsSentAsNoRoute() {
+        val contact = Contact("cd".repeat(32), Contact.TYPE_COMPANION, "Cy", 0, 0.0, 0.0, outPathLen = 2, outPathHex = "")
+        val frame = CompanionFrames.saveContact(contact)
+        assertEquals(-1, frame[35].toInt())
+        assertEquals(CompanionFrames.SAVE_CONTACT_BYTES, frame.size)
+        assertEquals(-1, CompanionFrames.saveContact(contact.copy(outPathHex = "zz".repeat(64)))[35].toInt())
+    }
+
+    @Test
     fun aRestoredContactHasNoRouteAndALongNameIsCutWhole() {
         val name = "\uD83D\uDD25 " + "x".repeat(40)
         val frame = CompanionFrames.saveContact(Contact("cd".repeat(32), Contact.TYPE_COMPANION, name, 0, 0.0, 0.0))

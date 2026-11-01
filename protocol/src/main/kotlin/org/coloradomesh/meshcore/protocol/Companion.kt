@@ -228,6 +228,9 @@ object CompanionFrames {
     private val PUBLIC_CHANNEL_KEY = Base64.getDecoder().decode("izOH6cXN6mrJ5e26oRXNcg==")
 
     private const val CONTACT_BYTES = 148
+
+    /** The length of a [saveContact] frame; a link with smaller packets cannot carry one. */
+    const val SAVE_CONTACT_BYTES = 144
     private const val PATH_BYTES = 64
     private const val NAME_BYTES = 32
     private const val CMD_ADD_UPDATE_CONTACT = 0x09
@@ -294,21 +297,29 @@ object CompanionFrames {
      * Adds [contact] to the radio's contact list, or updates the one with its public key: type,
      * flags (such as [Contact.FLAG_FAVOURITE]), route, name, last advert and position, laid out as
      * the radio lists contacts. The radio answers with [CompanionFrame.Ok], or an error, such as
-     * when its list is full. A name over 31 bytes is cut at a character boundary.
+     * when its list is full. A name over 31 bytes is cut at a character boundary. A route length
+     * without all 64 route bytes (as [Contact.outPathHex] holds them) is sent as no known route,
+     * so the radio floods rather than follow a route of zeros. [SAVE_CONTACT_BYTES] long.
+     *
+     * This changes the radio's contact list: an app calls it only when its user has asked for
+     * that (see the README).
      */
     fun saveContact(contact: Contact): ByteArray {
         val key = contact.publicKeyHex
         require(key.length == 64 && key.all { it in "0123456789abcdef" }) { "need a whole public key in lowercase hex" }
         val path = ByteArray(PATH_BYTES)
         val pathHex = contact.outPathHex
-        if (pathHex.length == PATH_BYTES * 2 && pathHex.all { it in "0123456789abcdef" }) {
+        val routeKnown = contact.outPathLen != Contact.OUT_PATH_UNKNOWN &&
+            pathHex.length == PATH_BYTES * 2 && pathHex.all { it in "0123456789abcdef" }
+        if (routeKnown) {
             for (i in 0 until PATH_BYTES) path[i] = pathHex.substring(i * 2, i * 2 + 2).toInt(16).toByte()
         }
+        val pathLen = if (routeKnown) contact.outPathLen else Contact.OUT_PATH_UNKNOWN
         val name = ByteArray(NAME_BYTES)
         nameBytes(contact.name, NAME_BYTES - 1).copyInto(name)
         return byteArrayOf(CMD_ADD_UPDATE_CONTACT.toByte()) +
             ByteArray(32) { key.substring(it * 2, it * 2 + 2).toInt(16).toByte() } +
-            byteArrayOf(contact.type.toByte(), contact.flags.toByte(), contact.outPathLen.toByte()) +
+            byteArrayOf(contact.type.toByte(), contact.flags.toByte(), pathLen.toByte()) +
             path + name + le32(contact.lastAdvert) +
             le32(Math.round(contact.latitude * 1e6)) + le32(Math.round(contact.longitude * 1e6))
     }

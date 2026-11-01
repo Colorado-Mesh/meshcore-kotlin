@@ -248,17 +248,39 @@ class CompanionClient(
      */
     /**
      * Queue adding [contact] to the radio, or updating the radio's contact with its key, as in
-     * [CompanionFrames.saveContact]. It may be queued during start-up, as soon as [start] has been
-     * called, and goes in turn after what is queued already; a message queued after it goes after
-     * it. False, with no listener call, before [start] or for a key that is not 64 hex
-     * characters; otherwise [Listener.onContactSaved] says how it went.
+     * [CompanionFrames.saveContact]. This changes the radio's contact list, so an app calls it
+     * only when its user has asked for that. It may be called as soon as [start] has been: a save
+     * asked for during start-up is held until start-up has finished, then goes in turn, and a
+     * message queued after it goes after it. False, with no listener call, before [start] or for
+     * a key that is not 64 lowercase hex characters; otherwise [Listener.onContactSaved] says how
+     * it went, once, also when start-up fails or the link closes first ([onLinkClosed]).
      */
     @Synchronized
     fun saveContact(contact: Contact): Boolean {
         if (!started || contact.publicKeyHex.length != 64 || !contact.publicKeyHex.all { it in "0123456789abcdef" }) return false
-        enqueue(Job.SaveContact(contact))
+        if (ready) enqueue(Job.SaveContact(contact)) else heldSaves.add(contact)
         return true
     }
+
+    /**
+     * The link has closed: nothing more will be answered. Each save not yet answered is reported
+     * as not saved, so a caller waiting on them is not left waiting.
+     */
+    @Synchronized
+    fun onLinkClosed() {
+        val unanswered = ArrayList<Contact>(heldSaves)
+        heldSaves.clear()
+        (current as? Job.SaveContact)?.let {
+            unanswered.add(it.contact)
+            current = null
+        }
+        queue.filterIsInstance<Job.SaveContact>().forEach { unanswered.add(it.contact) }
+        queue.removeAll { it is Job.SaveContact }
+        for (contact in unanswered) listener.onContactSaved(contact.publicKeyHex, false, null)
+    }
+
+    /** Saves asked for during start-up, sent once it has finished. */
+    private val heldSaves = ArrayList<Contact>()
 
     @Synchronized
     fun sendDirectText(publicKeyHex: String, text: String): Long? {
@@ -302,7 +324,11 @@ class CompanionClient(
             } else if (now >= deadline) {
                 listener.onLog("No answer from the radio to ${describe(job)}")
                 if (job == Job.AppStart || job == Job.DeviceQuery) {
+                    // Held saves are never sent on a connection that did not start.
+                    val held = heldSaves.toList()
+                    heldSaves.clear()
                     finish(job, answered = false)
+                    for (contact in held) listener.onContactSaved(contact.publicKeyHex, false, null)
                     listener.onStartUpFailed(describe(job))
                     return@let
                 }
@@ -550,6 +576,8 @@ class CompanionClient(
     private fun becomeReady() {
         ready = true
         requestBattery()
+        for (contact in heldSaves) enqueue(Job.SaveContact(contact))
+        heldSaves.clear()
     }
 
     private fun enqueue(job: Job) {

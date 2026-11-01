@@ -3,6 +3,7 @@ package org.coloradomesh.meshcore.ble
 import android.bluetooth.BluetoothManager
 import android.content.Context
 import org.coloradomesh.meshcore.protocol.CompanionClient
+import org.coloradomesh.meshcore.protocol.CompanionFrames
 import org.coloradomesh.meshcore.protocol.Contact
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -57,8 +58,17 @@ class RadioSession(
     /** Returns the id the listener's direct-message result will carry, or null when the radio cannot take it now. */
     fun sendDirectText(publicKeyHex: String, text: String): Long? = client.sendDirectText(publicKeyHex, text)
 
-    /** Adds or updates a contact on the radio; false before start-up has finished. */
-    fun saveContact(contact: Contact): Boolean = client.saveContact(contact)
+    /**
+     * Adds or updates a contact on the radio, as [CompanionClient.saveContact]; only when the
+     * user has asked for that. False when it cannot be sent: before the link is ready, or when
+     * its packets are too small for the frame, which the link would otherwise drop.
+     */
+    fun saveContact(contact: Contact): Boolean =
+        packetSize >= CompanionFrames.SAVE_CONTACT_BYTES && client.saveContact(contact)
+
+    /** The largest frame the link carries, once it is ready; 0 before. */
+    @Volatile
+    private var packetSize = 0
 
     /** Ask these companions, by public key, for their position about every [intervalMs]; empty stops. */
     fun setTracking(publicKeys: Set<String>, intervalMs: Long) = client.setTracking(publicKeys, intervalMs)
@@ -66,6 +76,7 @@ class RadioSession(
     override fun onLog(message: String) = logTo(message)
 
     override fun onReady(packetSize: Int) {
+        this.packetSize = packetSize
         if (packetSize < COMFORTABLE_PACKET_BYTES) {
             onLog("Warning: packets are limited to $packetSize bytes, so long frames will not fit")
         }
@@ -78,6 +89,8 @@ class RadioSession(
 
     override fun onClosed(reason: String) {
         ticker.shutdownNow()
+        // Saves not yet answered never will be; report them before the link's end.
+        client.onLinkClosed()
         closedTo(reason)
     }
 

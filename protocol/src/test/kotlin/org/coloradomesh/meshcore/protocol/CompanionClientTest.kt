@@ -2,6 +2,7 @@ package org.coloradomesh.meshcore.protocol
 
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -19,6 +20,7 @@ class CompanionClientTest {
     private val positions = ArrayList<Pair<String, TelemetryOutcome>>()
     private var queueEmpties = 0
     private val startUpFailures = ArrayList<String>()
+    private val savedContacts = ArrayList<Triple<String, Boolean, Int?>>()
     private val contactsRead = ArrayList<Long>()
     private val unanswered = ArrayList<Set<Int>>()
     private var now = 1_800_000_000_000L
@@ -42,6 +44,7 @@ class CompanionClientTest {
             override fun onContactsRead(lastModified: Long) { contactsRead.add(lastModified) }
             override fun onChannelSlotsUnanswered(slots: Set<Int>) { unanswered.add(slots) }
             override fun onStartUpFailed(what: String) { startUpFailures.add(what) }
+            override fun onContactSaved(publicKeyHex: String, saved: Boolean, errorCode: Int?) { savedContacts.add(Triple(publicKeyHex.take(2), saved, errorCode)) }
         },
         clock = { now },
     )
@@ -247,6 +250,137 @@ class CompanionClientTest {
         now += 7_000
         client.tick()
         assertEquals(listOf("the device query"), startUpFailures)
+    }
+
+    @Test
+    fun contactsAreSavedInTurnAndEachIsReported() {
+        val ann = Contact("aa".repeat(32), Contact.TYPE_COMPANION, "Ann", 0, 0.0, 0.0, flags = Contact.FLAG_FAVOURITE)
+        val bob = Contact("bb".repeat(32), Contact.TYPE_COMPANION, "Bob", 0, 0.0, 0.0)
+        assertFalse(client.saveContact(ann))
+        assertFalse(client.saveContact(ann.copy(publicKeyHex = "aa")))
+        startUp()
+        assertTrue(client.saveContact(ann))
+        assertTrue(client.saveContact(bob))
+        assertEquals(0x09, lastSent()[0].toInt())
+        client.onFrame(byteArrayOf(0))
+        assertEquals(0x09, lastSent()[0].toInt())
+        // The radio's list is full.
+        client.onFrame(byteArrayOf(1, 3))
+        assertEquals(listOf(Triple("aa", true, null), Triple("bb", false, 3)), savedContacts)
+    }
+
+    @Test
+    fun aSaveAskedForDuringStartUpWaitsForIt() {
+        val ann = Contact("aa".repeat(32), Contact.TYPE_COMPANION, "Ann", 0, 0.0, 0.0)
+        client.start()
+        assertTrue(client.saveContact(ann))
+        startUpAfterGreeting()
+        // Sent only once start-up has finished, after the battery request it begins with.
+        assertTrue(sent.any { it[0].toInt() == 0x09 })
+        assertTrue(sent.indexOfFirst { it[0].toInt() == 0x09 } > sent.indexOfFirst { it[0].toInt() == 0x0A })
+    }
+
+    @Test
+    fun aHeldSaveIsReportedNotSentWhenStartUpFails() {
+        val ann = Contact("aa".repeat(32), Contact.TYPE_COMPANION, "Ann", 0, 0.0, 0.0)
+        client.start()
+        client.saveContact(ann)
+        repeat(4) {
+            now += 7_000
+            client.tick()
+        }
+        assertTrue(sent.none { it[0].toInt() == 0x09 })
+        assertEquals(listOf(Triple("aa", false, null)), savedContacts)
+        assertEquals(listOf("the opening greeting"), startUpFailures)
+    }
+
+    @Test
+    fun savesStillWaitingAreReportedWhenTheLinkCloses() {
+        startUp()
+        client.saveContact(Contact("aa".repeat(32), Contact.TYPE_COMPANION, "Ann", 0, 0.0, 0.0))
+        client.saveContact(Contact("bb".repeat(32), Contact.TYPE_COMPANION, "Bob", 0, 0.0, 0.0))
+        client.onLinkClosed()
+        assertEquals(listOf(Triple("aa", false, null), Triple("bb", false, null)), savedContacts)
+        client.onLinkClosed()
+        assertEquals(2, savedContacts.size)
+        // Nothing is accepted after the link has closed.
+        assertFalse(client.saveContact(Contact("cc".repeat(32), Contact.TYPE_COMPANION, "Cy", 0, 0.0, 0.0)))
+        assertEquals(null, client.sendDirectText("cc".repeat(32), "hi"))
+    }
+
+    @Test
+    fun anUnansweredSaveStopsTheRestSoALateAnswerIsNotTakenForTheNext() {
+        startUp()
+        client.saveContact(Contact("aa".repeat(32), Contact.TYPE_COMPANION, "Ann", 0, 0.0, 0.0))
+        client.saveContact(Contact("bb".repeat(32), Contact.TYPE_COMPANION, "Bob", 0, 0.0, 0.0))
+        val sentBefore = sent.size
+        now += 7_000
+        client.tick()
+        assertEquals(listOf(Triple("aa", false, null), Triple("bb", false, null)), savedContacts)
+        // Bob's save was never sent; the clock is asked for instead, as a check.
+        assertEquals(sentBefore + 1, sent.size)
+        assertEquals(0x05, lastSent()[0].toInt())
+        // A channel message waits behind the check, so Ann's late OK cannot be taken as its answer.
+        client.sendChannelText(0, "hi")
+        client.onFrame(byteArrayOf(0))
+        assertEquals(2, savedContacts.size)
+        assertTrue(results.isEmpty())
+        assertEquals(0x05, lastSent()[0].toInt())
+        client.onFrame(byteArrayOf(0x09) + le32(1_800_000_000))
+        assertEquals(0x03, lastSent()[0].toInt())
+        client.onFrame(byteArrayOf(0))
+        assertEquals(listOf("hi" to true), results)
+        assertFalse(client.saveContact(Contact("cc".repeat(32), Contact.TYPE_COMPANION, "Cy", 0, 0.0, 0.0)))
+    }
+
+    @Test
+    fun aSaveAskedForWhileTheUnansweredOneIsReportedIsRefused() {
+        val asked = ArrayList<Boolean>()
+        lateinit var c: CompanionClient
+        c = CompanionClient(
+            transmit = { sent.add(it) },
+            listener = object : CompanionClient.Listener {
+                override fun onContactSaved(publicKeyHex: String, saved: Boolean, errorCode: Int?) {
+                    if (!saved) asked.add(c.saveContact(Contact("dd".repeat(32), Contact.TYPE_COMPANION, "Di", 0, 0.0, 0.0)))
+                }
+            },
+            clock = { now },
+            startUp = CompanionClient.StartUp(readChannels = false),
+        )
+        c.start()
+        c.onFrame(selfInfo())
+        c.onFrame(deviceInfo(slots = 0))
+        c.onFrame(byteArrayOf(2) + le32(0))
+        c.onFrame(byteArrayOf(4) + le32(0))
+        c.onFrame(byteArrayOf(0x0A))
+        c.onFrame(battery(3_900))
+        assertTrue(c.saveContact(Contact("aa".repeat(32), Contact.TYPE_COMPANION, "Ann", 0, 0.0, 0.0)))
+        now += 7_000
+        c.tick()
+        assertEquals(listOf(false), asked)
+    }
+
+    @Test
+    fun aRefusedGreetingFailsStartUpAndItsHeldSaves() {
+        client.start()
+        client.saveContact(Contact("aa".repeat(32), Contact.TYPE_COMPANION, "Ann", 0, 0.0, 0.0))
+        client.onFrame(byteArrayOf(1, 4))
+        assertEquals(listOf(Triple("aa", false, null)), savedContacts)
+        assertEquals(listOf("the opening greeting"), startUpFailures)
+        assertTrue(sent.none { it[0].toInt() == 0x09 })
+    }
+
+    @Test
+    fun closingTheLinkLeavesNothingToGoOutOnALaterStart() {
+        startUp()
+        client.saveContact(Contact("aa".repeat(32), Contact.TYPE_COMPANION, "Ann", 0, 0.0, 0.0))
+        client.sendChannelText(0, "queued behind the save")
+        client.onLinkClosed()
+        val before = sent.size
+        client.start()
+        // Only the new greeting goes out.
+        assertEquals(before + 1, sent.size)
+        assertEquals(1, lastSent()[0].toInt())
     }
 
     @Test

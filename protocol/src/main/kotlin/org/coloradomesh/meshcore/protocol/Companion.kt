@@ -43,6 +43,13 @@ data class Contact(
     val longitude: Double,
     /** The radio's flags for this contact; see [isFavourite]. */
     val flags: Int = 0,
+    /**
+     * The radio's route to this node, as it gave it: the path length byte (signed; -1 for no known
+     * route, so messages flood) and all 64 path bytes in hex. Kept only so [CompanionFrames.saveContact]
+     * can give a contact back unchanged; empty means no path.
+     */
+    val outPathLen: Int = OUT_PATH_UNKNOWN,
+    val outPathHex: String = "",
 ) {
     /** Marked as a favourite on the radio (flag bit 0, set by the MeshCore apps). */
     val isFavourite: Boolean
@@ -59,6 +66,9 @@ data class Contact(
         const val TYPE_SENSOR = 4
 
         const val FLAG_FAVOURITE = 0x01
+
+        /** No route known: the radio floods a message until the node's reply teaches it one. */
+        const val OUT_PATH_UNKNOWN = -1
     }
 }
 
@@ -218,6 +228,12 @@ object CompanionFrames {
     private val PUBLIC_CHANNEL_KEY = Base64.getDecoder().decode("izOH6cXN6mrJ5e26oRXNcg==")
 
     private const val CONTACT_BYTES = 148
+
+    /** The length of a [saveContact] frame; a link with smaller packets cannot carry one. */
+    const val SAVE_CONTACT_BYTES = 144
+    private const val PATH_BYTES = 64
+    private const val NAME_BYTES = 32
+    private const val CMD_ADD_UPDATE_CONTACT = 0x09
     private const val CHANNEL_INFO_BYTES = 50
 
     /** The most text bytes a channel message carries, sender name and separator included. */
@@ -276,6 +292,44 @@ object CompanionFrames {
 
     /** Collects one queued message; the radio answers with it or with [CompanionFrame.NoMoreMessages]. */
     fun syncNextMessage(): ByteArray = byteArrayOf(CMD_SYNC_NEXT_MESSAGE.toByte())
+
+    /**
+     * Adds [contact] to the radio's contact list, or updates the one with its public key: type,
+     * flags (such as [Contact.FLAG_FAVOURITE]), route, name, last advert and position, laid out as
+     * the radio lists contacts. The radio answers with [CompanionFrame.Ok], or an error, such as
+     * when its list is full. A name over 31 bytes is cut at a character boundary. A route length
+     * without all 64 route bytes (as [Contact.outPathHex] holds them) is sent as no known route,
+     * so the radio floods rather than follow a route of zeros. [SAVE_CONTACT_BYTES] long.
+     *
+     * This changes the radio's contact list: an app calls it only when its user has asked for
+     * that (see the README).
+     */
+    fun saveContact(contact: Contact): ByteArray {
+        val key = contact.publicKeyHex
+        require(key.length == 64 && key.all { it in "0123456789abcdef" }) { "need a whole public key in lowercase hex" }
+        val path = ByteArray(PATH_BYTES)
+        val pathHex = contact.outPathHex
+        val routeKnown = contact.outPathLen != Contact.OUT_PATH_UNKNOWN &&
+            pathHex.length == PATH_BYTES * 2 && pathHex.all { it in "0123456789abcdef" }
+        if (routeKnown) {
+            for (i in 0 until PATH_BYTES) path[i] = pathHex.substring(i * 2, i * 2 + 2).toInt(16).toByte()
+        }
+        val pathLen = if (routeKnown) contact.outPathLen else Contact.OUT_PATH_UNKNOWN
+        val name = ByteArray(NAME_BYTES)
+        nameBytes(contact.name, NAME_BYTES - 1).copyInto(name)
+        return byteArrayOf(CMD_ADD_UPDATE_CONTACT.toByte()) +
+            ByteArray(32) { key.substring(it * 2, it * 2 + 2).toInt(16).toByte() } +
+            byteArrayOf(contact.type.toByte(), contact.flags.toByte(), pathLen.toByte()) +
+            path + name + le32(contact.lastAdvert) +
+            le32(Math.round(contact.latitude * 1e6)) + le32(Math.round(contact.longitude * 1e6))
+    }
+
+    /** [name] in UTF-8, at most [limit] bytes, never ending part-way through a character. */
+    private fun nameBytes(name: String, limit: Int): ByteArray {
+        var end = name.length
+        while (name.substring(0, end).toByteArray(Charsets.UTF_8).size > limit) end = name.offsetByCodePoints(end, -1)
+        return name.substring(0, end).toByteArray(Charsets.UTF_8)
+    }
 
     /** Sends [text] on a channel. The radio adds its own name in front before transmitting. */
     fun sendChannelText(channelIndex: Int, timestampSeconds: Long, text: String): ByteArray =
@@ -343,6 +397,8 @@ object CompanionFrames {
             latitude = int32(frame, 136) / 1e6,
             longitude = int32(frame, 140) / 1e6,
             flags = frame[34].toInt() and 0xFF,
+            outPathLen = frame[35].toInt(),
+            outPathHex = hex(frame, 36, PATH_BYTES),
         )
     }
 

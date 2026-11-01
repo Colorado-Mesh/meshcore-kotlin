@@ -151,6 +151,12 @@ class CompanionClient(
          * should disconnect and try again later rather than wait.
          */
         fun onStartUpFailed(what: String) {}
+
+        /**
+         * How a [saveContact] ended: [saved], or not, with the radio's error code (null when it
+         * did not answer). Called once per contact.
+         */
+        fun onContactSaved(publicKeyHex: String, saved: Boolean, errorCode: Int?) {}
     }
 
     private sealed interface Job {
@@ -163,6 +169,14 @@ class CompanionClient(
         data class SendDirect(val id: Long) : Job
         data object Battery : Job
         data object GetTime : Job
+        data class SaveContact(val contact: Contact) : Job
+
+        /**
+         * After an unanswered save: asks for the radio's clock, which it answers with its own
+         * frame, not a bare OK. The radio answers commands in turn, so once this is answered any
+         * late answer to the save has come and gone, and later commands' answers are their own.
+         */
+        data object SaveCheck : Job
 
         /** Set the radio's clock; [behindSeconds] is how far behind this client's it was (negative: ahead). */
         data class SetTime(val behindSeconds: Long) : Job
@@ -215,8 +229,12 @@ class CompanionClient(
 
     @Synchronized
     fun start() {
+        started = true
+        savesStopped = false
         enqueue(Job.AppStart)
     }
+
+    private var started = false
 
     /** Which try of the current start-up command this is. */
     private var startTry = 1
@@ -236,6 +254,54 @@ class CompanionClient(
      * characters). Returns the id that [Listener.onDirectResult] will report it under, or null,
      * with no listener call, when it cannot be queued: start-up is not finished or too many wait.
      */
+    /**
+     * Queue adding [contact] to the radio, or updating the radio's contact with its key, as in
+     * [CompanionFrames.saveContact]. This changes the radio's contact list, so an app calls it
+     * only when its user has asked for that. It may be called as soon as [start] has been: a save
+     * asked for during start-up is held until start-up has finished, then goes in turn, and a
+     * message queued after it goes after it. False, with no listener call, before [start] or for
+     * a key that is not 64 lowercase hex characters, after the link has closed ([onLinkClosed]),
+     * or once a save on this connection has gone unanswered (see [finish]); otherwise
+     * [Listener.onContactSaved] says how it went, once, also when start-up fails or the link
+     * closes first.
+     */
+    @Synchronized
+    fun saveContact(contact: Contact): Boolean {
+        if (!started || savesStopped || contact.publicKeyHex.length != 64 || !contact.publicKeyHex.all { it in "0123456789abcdef" }) return false
+        if (ready) enqueue(Job.SaveContact(contact)) else heldSaves.add(contact)
+        return true
+    }
+
+    /**
+     * The link has closed: nothing more will be answered. Each save not yet answered is reported
+     * as not saved, so a caller waiting on them is not left waiting.
+     */
+    @Synchronized
+    fun onLinkClosed() {
+        // Nothing more can be sent: saves and messages are refused until start() runs again, and
+        // nothing of this connection's is left to go out on a later one.
+        started = false
+        ready = false
+        val unanswered = ArrayList<Contact>(heldSaves)
+        heldSaves.clear()
+        (current as? Job.SaveContact)?.let { unanswered.add(it.contact) }
+        queue.filterIsInstance<Job.SaveContact>().forEach { unanswered.add(it.contact) }
+        // Messages queued here are the app's to send again: its outbox keeps them waiting.
+        current = null
+        queue.clear()
+        for (contact in unanswered) listener.onContactSaved(contact.publicKeyHex, false, null)
+    }
+
+    /** Saves asked for during start-up, sent once it has finished. */
+    private val heldSaves = ArrayList<Contact>()
+
+    /**
+     * Set when a save goes unanswered: the radio's answer is a bare OK, which carries nothing to
+     * say which save it is for, so a late one could be taken as the next save's. No more saves
+     * are sent on this connection, and those queued are reported as not saved.
+     */
+    private var savesStopped = false
+
     @Synchronized
     fun sendDirectText(publicKeyHex: String, text: String): Long? {
         if (!ready || outbound.size >= MAX_OUTSTANDING_DIRECTS || publicKeyHex.length < CompanionFrames.KEY_PREFIX_BYTES * 2) {
@@ -278,8 +344,7 @@ class CompanionClient(
             } else if (now >= deadline) {
                 listener.onLog("No answer from the radio to ${describe(job)}")
                 if (job == Job.AppStart || job == Job.DeviceQuery) {
-                    finish(job, answered = false)
-                    listener.onStartUpFailed(describe(job))
+                    startUpFailed(job, errorCode = null)
                     return@let
                 }
                 // Unlike an empty slot, which the radio answers with an error: its channel is unknown.
@@ -367,11 +432,20 @@ class CompanionClient(
             listener.onLog("Unexpected frame from the radio: ${frame::class.simpleName}")
             return
         }
+        // After an unanswered save, only the check's own answer counts; a late OK or error is the save's.
+        if (job == Job.SaveCheck) {
+            if (frame is CompanionFrame.CurrentTime) {
+                finish(job)
+            } else {
+                listener.onLog("A late answer from the radio (${frame::class.simpleName}), taken as the unanswered contact save's; ignored")
+            }
+            return
+        }
         if (frame is CompanionFrame.Error) {
             // An empty or missing channel slot is reported as an error, which is not worth a log line.
             if (job !is Job.GetChannel) listener.onLog("The radio refused ${describe(job)} (error ${frame.code})")
             if (job == Job.Battery) batteryRefused = true
-            finish(job, answered = false, errorCode = frame.code)
+            if (job == Job.AppStart || job == Job.DeviceQuery) startUpFailed(job, frame.code) else finish(job, answered = false, errorCode = frame.code)
             return
         }
         when (job) {
@@ -461,6 +535,9 @@ class CompanionClient(
                 if (setting) queue.addFirst(Job.SetTime(behind))
                 finish(job)
             }
+            is Job.SaveContact -> if (frame == CompanionFrame.Ok) finish(job)
+            // Answered above, before an error could be taken as its own.
+            Job.SaveCheck -> Unit
             is Job.SetTime -> if (frame == CompanionFrame.Ok) {
                 val which = if (job.behindSeconds > 0) "behind" else "ahead"
                 listener.onLog("Set the radio's clock to this device's; it was ${kotlin.math.abs(job.behindSeconds)} s $which")
@@ -507,6 +584,20 @@ class CompanionClient(
                 }
             }
             is Job.Telemetry -> if (!answered) listener.onTelemetry(job.publicKeyHex, TelemetryOutcome.NotSent)
+            is Job.SaveContact -> {
+                // State first: a listener that asks for another save meanwhile is refused.
+                val left = if (!answered && errorCode == null) {
+                    savesStopped = true
+                    // Before anything else that a bare OK would answer, such as a channel message.
+                    queue.addFirst(Job.SaveCheck)
+                    queue.filterIsInstance<Job.SaveContact>().also { queue.removeAll { it is Job.SaveContact } }
+                } else {
+                    emptyList()
+                }
+                listener.onContactSaved(job.contact.publicKeyHex, answered, errorCode)
+                if (left.isNotEmpty()) listener.onLog("No answer to a contact save; not sending the ${left.size} after it on this connection")
+                for (later in left) listener.onContactSaved(later.contact.publicKeyHex, false, null)
+            }
             is Job.GetChannel -> {
                 slotsLeft--
                 if (slotsLeft == 0) {
@@ -520,10 +611,25 @@ class CompanionClient(
         pump()
     }
 
+    /**
+     * Start-up cannot finish: [job] (the greeting or the device query) went unanswered through
+     * every try, or the radio refused it. Saves held for after start-up are reported as not
+     * saved, never sent, and the app is told.
+     */
+    private fun startUpFailed(job: Job, errorCode: Int?) {
+        val held = heldSaves.toList()
+        heldSaves.clear()
+        finish(job, answered = false, errorCode = errorCode)
+        for (contact in held) listener.onContactSaved(contact.publicKeyHex, false, null)
+        listener.onStartUpFailed(describe(job))
+    }
+
     /** Start-up is over: messages can be sent, and notices of new messages and adverts acted on. */
     private fun becomeReady() {
         ready = true
         requestBattery()
+        for (contact in heldSaves) enqueue(Job.SaveContact(contact))
+        heldSaves.clear()
     }
 
     private fun enqueue(job: Job) {
@@ -562,6 +668,8 @@ class CompanionClient(
             CompanionFrames.sendDirectText(message.publicKeyHex, message.attempt, message.timestamp, message.text)
         }
         Job.Battery -> CompanionFrames.getBattery()
+        is Job.SaveContact -> CompanionFrames.saveContact(job.contact)
+        Job.SaveCheck -> CompanionFrames.getDeviceTime()
         is Job.Telemetry -> CompanionFrames.telemetryRequest(job.publicKeyHex)
         Job.GetTime -> CompanionFrames.getDeviceTime()
         // The time when it is sent, not when it was queued.
@@ -579,6 +687,8 @@ class CompanionClient(
         Job.Battery -> "the battery request"
         is Job.Telemetry -> "a position request"
         Job.GetTime -> "the request for its clock"
+        is Job.SaveContact -> "saving the contact ${job.contact.name}"
+        Job.SaveCheck -> "the check after an unanswered contact save"
         is Job.SetTime -> "setting its clock"
     }
 

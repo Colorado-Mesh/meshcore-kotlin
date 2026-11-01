@@ -222,4 +222,47 @@ class CompanionFramesTest {
         assertEquals(CompanionFrame.CurrentTime(3_000_000_000), CompanionFrames.parse(byteArrayOf(0x09) + le32(-1_294_967_296)))
         assertTrue(CompanionFrames.parse(byteArrayOf(0x09, 1, 2)) is CompanionFrame.Other)
     }
+
+    @Test
+    fun aSavedContactIsLaidOutAsTheRadioListsIt() {
+        val path = "0a1b" + "00".repeat(62)
+        val contact = Contact(
+            publicKeyHex = "ab".repeat(32),
+            type = Contact.TYPE_COMPANION,
+            name = "W0RMT-M9",
+            lastAdvert = 1_700_000_000,
+            latitude = 39.9778,
+            longitude = -105.1319,
+            flags = Contact.FLAG_FAVOURITE,
+            outPathLen = 2,
+            outPathHex = path,
+        )
+        val frame = CompanionFrames.saveContact(contact)
+        assertEquals(0x09, frame[0].toInt())
+        assertEquals(144, frame.size)
+        // The same bytes as the radio's own listing, with its code and a last-modified time.
+        val listed = byteArrayOf(3) + frame.copyOfRange(1, frame.size) + ByteArray(4)
+        val parsed = (CompanionFrames.parse(listed) as CompanionFrame.ContactEntry).contact
+        assertEquals(contact, parsed)
+    }
+
+    @Test
+    fun aRouteLengthWithoutItsBytesIsSentAsNoRoute() {
+        val contact = Contact("cd".repeat(32), Contact.TYPE_COMPANION, "Cy", 0, 0.0, 0.0, outPathLen = 2, outPathHex = "")
+        val frame = CompanionFrames.saveContact(contact)
+        assertEquals(-1, frame[35].toInt())
+        assertEquals(CompanionFrames.SAVE_CONTACT_BYTES, frame.size)
+        assertEquals(-1, CompanionFrames.saveContact(contact.copy(outPathHex = "zz".repeat(64)))[35].toInt())
+    }
+
+    @Test
+    fun aRestoredContactHasNoRouteAndALongNameIsCutWhole() {
+        val name = "\uD83D\uDD25 " + "x".repeat(40)
+        val frame = CompanionFrames.saveContact(Contact("cd".repeat(32), Contact.TYPE_COMPANION, name, 0, 0.0, 0.0))
+        assertEquals(-1, frame[35].toInt())
+        assertTrue((36 until 100).all { frame[it].toInt() == 0 })
+        val nameBytes = frame.copyOfRange(100, 132)
+        assertEquals(0, nameBytes[31].toInt())
+        assertEquals("\uD83D\uDD25 " + "x".repeat(26), String(nameBytes, Charsets.UTF_8).trimEnd('\u0000'))
+    }
 }

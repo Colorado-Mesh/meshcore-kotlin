@@ -171,6 +171,13 @@ class CompanionClient(
         data object GetTime : Job
         data class SaveContact(val contact: Contact) : Job
 
+        /**
+         * After an unanswered save: asks for the radio's clock, which it answers with its own
+         * frame, not a bare OK. The radio answers commands in turn, so once this is answered any
+         * late answer to the save has come and gone, and later commands' answers are their own.
+         */
+        data object SaveCheck : Job
+
         /** Set the radio's clock; [behindSeconds] is how far behind this client's it was (negative: ahead). */
         data class SetTime(val behindSeconds: Long) : Job
         data class Telemetry(val publicKeyHex: String) : Job
@@ -271,17 +278,17 @@ class CompanionClient(
      */
     @Synchronized
     fun onLinkClosed() {
-        // Nothing more can be sent: saves and messages are refused until start() runs again.
+        // Nothing more can be sent: saves and messages are refused until start() runs again, and
+        // nothing of this connection's is left to go out on a later one.
         started = false
         ready = false
         val unanswered = ArrayList<Contact>(heldSaves)
         heldSaves.clear()
-        (current as? Job.SaveContact)?.let {
-            unanswered.add(it.contact)
-            current = null
-        }
+        (current as? Job.SaveContact)?.let { unanswered.add(it.contact) }
         queue.filterIsInstance<Job.SaveContact>().forEach { unanswered.add(it.contact) }
-        queue.removeAll { it is Job.SaveContact }
+        // Messages queued here are the app's to send again: its outbox keeps them waiting.
+        current = null
+        queue.clear()
         for (contact in unanswered) listener.onContactSaved(contact.publicKeyHex, false, null)
     }
 
@@ -337,12 +344,7 @@ class CompanionClient(
             } else if (now >= deadline) {
                 listener.onLog("No answer from the radio to ${describe(job)}")
                 if (job == Job.AppStart || job == Job.DeviceQuery) {
-                    // Held saves are never sent on a connection that did not start.
-                    val held = heldSaves.toList()
-                    heldSaves.clear()
-                    finish(job, answered = false)
-                    for (contact in held) listener.onContactSaved(contact.publicKeyHex, false, null)
-                    listener.onStartUpFailed(describe(job))
+                    startUpFailed(job, errorCode = null)
                     return@let
                 }
                 // Unlike an empty slot, which the radio answers with an error: its channel is unknown.
@@ -430,11 +432,20 @@ class CompanionClient(
             listener.onLog("Unexpected frame from the radio: ${frame::class.simpleName}")
             return
         }
+        // After an unanswered save, only the check's own answer counts; a late OK or error is the save's.
+        if (job == Job.SaveCheck) {
+            if (frame is CompanionFrame.CurrentTime) {
+                finish(job)
+            } else {
+                listener.onLog("A late answer from the radio (${frame::class.simpleName}), taken as the unanswered contact save's; ignored")
+            }
+            return
+        }
         if (frame is CompanionFrame.Error) {
             // An empty or missing channel slot is reported as an error, which is not worth a log line.
             if (job !is Job.GetChannel) listener.onLog("The radio refused ${describe(job)} (error ${frame.code})")
             if (job == Job.Battery) batteryRefused = true
-            finish(job, answered = false, errorCode = frame.code)
+            if (job == Job.AppStart || job == Job.DeviceQuery) startUpFailed(job, frame.code) else finish(job, answered = false, errorCode = frame.code)
             return
         }
         when (job) {
@@ -525,6 +536,8 @@ class CompanionClient(
                 finish(job)
             }
             is Job.SaveContact -> if (frame == CompanionFrame.Ok) finish(job)
+            // Answered above, before an error could be taken as its own.
+            Job.SaveCheck -> Unit
             is Job.SetTime -> if (frame == CompanionFrame.Ok) {
                 val which = if (job.behindSeconds > 0) "behind" else "ahead"
                 listener.onLog("Set the radio's clock to this device's; it was ${kotlin.math.abs(job.behindSeconds)} s $which")
@@ -572,14 +585,18 @@ class CompanionClient(
             }
             is Job.Telemetry -> if (!answered) listener.onTelemetry(job.publicKeyHex, TelemetryOutcome.NotSent)
             is Job.SaveContact -> {
-                listener.onContactSaved(job.contact.publicKeyHex, answered, errorCode)
-                if (!answered && errorCode == null) {
+                // State first: a listener that asks for another save meanwhile is refused.
+                val left = if (!answered && errorCode == null) {
                     savesStopped = true
-                    val left = queue.filterIsInstance<Job.SaveContact>()
-                    queue.removeAll { it is Job.SaveContact }
-                    if (left.isNotEmpty()) listener.onLog("No answer to a contact save; not sending the ${left.size} after it on this connection")
-                    for (later in left) listener.onContactSaved(later.contact.publicKeyHex, false, null)
+                    // Before anything else that a bare OK would answer, such as a channel message.
+                    queue.addFirst(Job.SaveCheck)
+                    queue.filterIsInstance<Job.SaveContact>().also { queue.removeAll { it is Job.SaveContact } }
+                } else {
+                    emptyList()
                 }
+                listener.onContactSaved(job.contact.publicKeyHex, answered, errorCode)
+                if (left.isNotEmpty()) listener.onLog("No answer to a contact save; not sending the ${left.size} after it on this connection")
+                for (later in left) listener.onContactSaved(later.contact.publicKeyHex, false, null)
             }
             is Job.GetChannel -> {
                 slotsLeft--
@@ -592,6 +609,19 @@ class CompanionClient(
             else -> Unit
         }
         pump()
+    }
+
+    /**
+     * Start-up cannot finish: [job] (the greeting or the device query) went unanswered through
+     * every try, or the radio refused it. Saves held for after start-up are reported as not
+     * saved, never sent, and the app is told.
+     */
+    private fun startUpFailed(job: Job, errorCode: Int?) {
+        val held = heldSaves.toList()
+        heldSaves.clear()
+        finish(job, answered = false, errorCode = errorCode)
+        for (contact in held) listener.onContactSaved(contact.publicKeyHex, false, null)
+        listener.onStartUpFailed(describe(job))
     }
 
     /** Start-up is over: messages can be sent, and notices of new messages and adverts acted on. */
@@ -639,6 +669,7 @@ class CompanionClient(
         }
         Job.Battery -> CompanionFrames.getBattery()
         is Job.SaveContact -> CompanionFrames.saveContact(job.contact)
+        Job.SaveCheck -> CompanionFrames.getDeviceTime()
         is Job.Telemetry -> CompanionFrames.telemetryRequest(job.publicKeyHex)
         Job.GetTime -> CompanionFrames.getDeviceTime()
         // The time when it is sent, not when it was queued.
@@ -657,6 +688,7 @@ class CompanionClient(
         is Job.Telemetry -> "a position request"
         Job.GetTime -> "the request for its clock"
         is Job.SaveContact -> "saving the contact ${job.contact.name}"
+        Job.SaveCheck -> "the check after an unanswered contact save"
         is Job.SetTime -> "setting its clock"
     }
 

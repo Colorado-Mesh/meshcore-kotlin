@@ -53,8 +53,11 @@ sealed interface TelemetryOutcome {
  *   firmware marks its own flooded packets as seen, so this is not expected, but if it happens
  *   the log says so.
  *
- * It only reads from the radio, sends text and asks tracked nodes for their position. It never changes the radio's settings,
- * channels, contacts or paths, nor its clock unless the app asks for that with [StartUp.clockTolerance].
+ * It only reads from the radio, sends text and asks tracked nodes for their position. It never
+ * changes the radio's settings, channels or paths. Two writes happen only when the app asks: the
+ * radio's clock, with [StartUp.clockTolerance], and contacts, with [saveContact]. An app calls
+ * [saveContact] only when its user has chosen that, and gives [savesAllowed] so that a save
+ * already queued is dropped, not sent, once the user turns the choice off.
  *
  * Thread-safe. Listener calls are made while the client is locked, so they must not block.
  */
@@ -66,6 +69,11 @@ class CompanionClient(
     private val appName: String = APP_NAME,
     /** What to read at start-up besides the greeting and the device query. */
     private val startUp: StartUp = StartUp(),
+    /**
+     * Asked just before each contact save goes to the radio: false drops it, reported as not
+     * saved. Lets the user's choice to stop contact saves take effect on saves already queued.
+     */
+    private val savesAllowed: () -> Boolean = { true },
 ) {
     /**
      * What [start] reads before collecting messages.
@@ -650,6 +658,11 @@ class CompanionClient(
             val job = queue.poll() ?: return
             // A message acknowledged while its retry was waiting needs no retry.
             if (job is Job.SendDirect && job.id !in outbound) continue
+            if (job is Job.SaveContact && !savesAllowed()) {
+                listener.onLog("Not saving ${job.contact.name} to the radio: contact saves have been turned off")
+                listener.onContactSaved(job.contact.publicKeyHex, false, null)
+                continue
+            }
             current = job
             extend()
             transmit(frameFor(job))

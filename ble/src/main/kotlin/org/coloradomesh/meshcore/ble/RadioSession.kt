@@ -31,6 +31,8 @@ class RadioSession(
     connectTries: Int = GattLink.DEFAULT_CONNECT_TRIES,
     /** What the protocol client reads at start-up; see [CompanionClient.StartUp]. */
     startUp: CompanionClient.StartUp = CompanionClient.StartUp(),
+    /** Asked before each contact save is sent; see [CompanionClient]'s `savesAllowed`. */
+    savesAllowed: () -> Boolean = { true },
     onClosed: (reason: String) -> Unit,
 ) : GattLink.Events {
     // Kept under their own names so they cannot be mistaken for the GattLink.Events methods.
@@ -38,7 +40,13 @@ class RadioSession(
     private val linkReadyTo = onLinkReady
     private val closedTo = onClosed
     private val link = GattLink(context, this, connectTries)
-    private val client = CompanionClient(transmit = { link.send(it) }, listener = listener, appName = appName, startUp = startUp)
+    private val client = CompanionClient(
+        transmit = { link.send(it) },
+        listener = listener,
+        appName = appName,
+        startUp = startUp,
+        savesAllowed = savesAllowed,
+    )
     private val ticker = Executors.newSingleThreadScheduledExecutor()
 
     fun open() {

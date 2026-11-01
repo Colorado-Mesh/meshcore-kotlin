@@ -53,8 +53,11 @@ sealed interface TelemetryOutcome {
  *   firmware marks its own flooded packets as seen, so this is not expected, but if it happens
  *   the log says so.
  *
- * It only reads from the radio, sends text and asks tracked nodes for their position. It never changes the radio's settings,
- * channels, contacts or paths, nor its clock unless the app asks for that with [StartUp.clockTolerance].
+ * It only reads from the radio, sends text and asks tracked nodes for their position. It never
+ * changes the radio's settings, channels or paths. Two writes happen only when the app asks: the
+ * radio's clock, with [StartUp.clockTolerance], and contacts, with [saveContact]. An app calls
+ * [saveContact] only when its user has chosen that, and gives [savesAllowed] so that a save
+ * already queued is dropped, not sent, once the user turns the choice off.
  *
  * Thread-safe. Listener calls are made while the client is locked, so they must not block.
  */
@@ -66,6 +69,11 @@ class CompanionClient(
     private val appName: String = APP_NAME,
     /** What to read at start-up besides the greeting and the device query. */
     private val startUp: StartUp = StartUp(),
+    /**
+     * Asked just before each contact save goes to the radio: false drops it, reported as not
+     * saved. Lets the user's choice to stop contact saves take effect on saves already queued.
+     */
+    private val savesAllowed: () -> Boolean = { true },
 ) {
     /**
      * What [start] reads before collecting messages.
@@ -260,7 +268,7 @@ class CompanionClient(
      * only when its user has asked for that. It may be called as soon as [start] has been: a save
      * asked for during start-up is held until start-up has finished, then goes in turn, and a
      * message queued after it goes after it. False, with no listener call, before [start] or for
-     * a key that is not 64 lowercase hex characters, after the link has closed ([onLinkClosed]),
+     * a key that is not 64 lowercase hex characters, while `savesAllowed` says no, after the link has closed ([onLinkClosed]),
      * or once a save on this connection has gone unanswered (see [finish]); otherwise
      * [Listener.onContactSaved] says how it went, once, also when start-up fails or the link
      * closes first.
@@ -268,6 +276,9 @@ class CompanionClient(
     @Synchronized
     fun saveContact(contact: Contact): Boolean {
         if (!started || savesStopped || contact.publicKeyHex.length != 64 || !contact.publicKeyHex.all { it in "0123456789abcdef" }) return false
+        // Refused at once while saves are off, so a listener that tries again on each "not saved"
+        // cannot loop through pump.
+        if (!savesAllowed()) return false
         if (ready) enqueue(Job.SaveContact(contact)) else heldSaves.add(contact)
         return true
     }
@@ -650,6 +661,11 @@ class CompanionClient(
             val job = queue.poll() ?: return
             // A message acknowledged while its retry was waiting needs no retry.
             if (job is Job.SendDirect && job.id !in outbound) continue
+            if (job is Job.SaveContact && !savesAllowed()) {
+                listener.onLog("Not saving ${job.contact.name} to the radio: contact saves have been turned off")
+                listener.onContactSaved(job.contact.publicKeyHex, false, null)
+                continue
+            }
             current = job
             extend()
             transmit(frameFor(job))

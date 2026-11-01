@@ -110,7 +110,25 @@ class CompanionFramesTest {
     fun readsADirectMessageInTheNewLayout() {
         val frame = byteArrayOf(0x10, 24, 0, 0) + prefix + byteArrayOf(2, 0) + le32(1_700_000_123) + "Meet at the trailhead".toByteArray()
         val message = (CompanionFrames.parse(frame) as CompanionFrame.DirectText).message
-        assertEquals(DirectMessage("a1b2c3d4e5f6", "Meet at the trailhead", 1_700_000_123), message)
+        // SNR 24 quarter-dB is 6 dB; flooded through 2 repeaters.
+        assertEquals(DirectMessage("a1b2c3d4e5f6", "Meet at the trailhead", 1_700_000_123, snr = 6.0, hops = 2), message)
+    }
+
+    @Test
+    fun signalAndHopsInTheNewLayout() {
+        fun direct(snr: Int, pathLen: Int) = (
+            CompanionFrames.parse(
+                byteArrayOf(0x10, snr.toByte(), 0, 0) + prefix + byteArrayOf(pathLen.toByte(), 0) + le32(5) + "ok".toByteArray(),
+            ) as CompanionFrame.DirectText
+            ).message
+        // Below the noise: a negative SNR, in quarter dB.
+        assertEquals(-7.25, direct(-29, 0).snr!!, 1e-9)
+        // Heard from the sender itself.
+        assertEquals(0, direct(10, 0).hops)
+        // Along a known route: no count.
+        assertEquals(null, direct(10, 0xFF).hops)
+        // 2-byte path hashes in the top bits, 2 hops in the low 6.
+        assertEquals(2, direct(10, 0x42).hops)
     }
 
     @Test
@@ -119,6 +137,8 @@ class CompanionFramesTest {
         val message = (CompanionFrames.parse(frame) as CompanionFrame.DirectText).message
         assertEquals("111111111111", message.senderPrefixHex)
         assertEquals("ok", message.text)
+        assertEquals(null, message.snr)
+        assertEquals(null, message.hops)
     }
 
     @Test
@@ -126,7 +146,7 @@ class CompanionFramesTest {
         // Code, SNR and two reserved bytes, then channel index, path length, text type, timestamp, text.
         val frame = byteArrayOf(0x11, 20, 0, 0, 3, 2, 0) + le32(1_700_000_456) + "Alpha: on air".toByteArray()
         val message = (CompanionFrames.parse(frame) as CompanionFrame.ChannelText).message
-        assertEquals(ChannelMessage(3, "Alpha: on air", 1_700_000_456), message)
+        assertEquals(ChannelMessage(3, "Alpha: on air", 1_700_000_456, snr = 5.0, hops = 2), message)
     }
 
     @Test

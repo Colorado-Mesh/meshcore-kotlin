@@ -95,6 +95,10 @@ data class ChannelMessage(
     val text: String,
     /** Unix seconds, by the sender's clock. */
     val timestamp: Long,
+    /** See [DirectMessage.snr]. */
+    val snr: Double? = null,
+    /** See [DirectMessage.hops]. */
+    val hops: Int? = null,
 )
 
 /** A plain text message sent to this radio alone by another node. */
@@ -104,6 +108,17 @@ data class DirectMessage(
     val text: String,
     /** Unix seconds, by the sender's clock. A sender's retries of one message keep the same value. */
     val timestamp: Long,
+    /**
+     * Signal-to-noise ratio in dB of the last hop the radio heard it on: from the sender, or from
+     * the repeater that passed it on. Given in quarter-dB steps; null on firmware too old to say.
+     */
+    val snr: Double? = null,
+    /**
+     * Repeaters it passed through when it was flooded across the mesh: 0 when the radio heard the
+     * sender itself. Null when it came along a known route, which the radio gives no count for, or
+     * on firmware too old to say.
+     */
+    val hops: Int? = null,
 )
 
 /** A position a node reported, from its GPS. */
@@ -436,6 +451,8 @@ object CompanionFrames {
                 channelIndex = frame[start].toInt() and 0xFF,
                 text = text(frame, start + 7, frame.size - start - 7),
                 timestamp = uint32(frame, start + 3),
+                snr = snr(frame, start),
+                hops = hops(frame[start + 1]),
             ),
         )
     }
@@ -455,8 +472,25 @@ object CompanionFrames {
                 senderPrefixHex = hex(frame, start, KEY_PREFIX_BYTES),
                 text = text(frame, textStart, frame.size - textStart),
                 timestamp = uint32(frame, start + KEY_PREFIX_BYTES + 2),
+                snr = snr(frame, start),
+                hops = hops(frame[start + KEY_PREFIX_BYTES]),
             ),
         )
+    }
+
+    /**
+     * The new layouts (code 0x10 and 0x11, fields from [start] 4) carry the signal in byte 1, as a
+     * signed count of quarter dB; the old ones carry none.
+     */
+    private fun snr(frame: ByteArray, start: Int): Double? = if (start >= 4) frame[1] / 4.0 else null
+
+    /**
+     * The path length byte: 0xFF for a message that came along a known route; otherwise the low 6
+     * bits count the hops (the top 2 give the size of each hop's hash in the path).
+     */
+    private fun hops(pathLen: Byte): Int? {
+        val value = pathLen.toInt() and 0xFF
+        return if (value == 0xFF) null else value and 0x3F
     }
 
     private fun hex(frame: ByteArray, offset: Int, length: Int): String =

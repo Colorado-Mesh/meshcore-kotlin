@@ -303,6 +303,25 @@ class CompanionClientTest {
         assertEquals(listOf(Triple("aa", false, null), Triple("bb", false, null)), savedContacts)
         client.onLinkClosed()
         assertEquals(2, savedContacts.size)
+        // Nothing is accepted after the link has closed.
+        assertFalse(client.saveContact(Contact("cc".repeat(32), Contact.TYPE_COMPANION, "Cy", 0, 0.0, 0.0)))
+        assertEquals(null, client.sendDirectText("cc".repeat(32), "hi"))
+    }
+
+    @Test
+    fun anUnansweredSaveStopsTheRestSoALateAnswerIsNotTakenForTheNext() {
+        startUp()
+        client.saveContact(Contact("aa".repeat(32), Contact.TYPE_COMPANION, "Ann", 0, 0.0, 0.0))
+        client.saveContact(Contact("bb".repeat(32), Contact.TYPE_COMPANION, "Bob", 0, 0.0, 0.0))
+        val sentBefore = sent.size
+        now += 7_000
+        client.tick()
+        assertEquals(listOf(Triple("aa", false, null), Triple("bb", false, null)), savedContacts)
+        // Bob's save was never sent, so Ann's late OK has nothing to complete.
+        assertEquals(sentBefore, sent.size)
+        client.onFrame(byteArrayOf(0))
+        assertEquals(2, savedContacts.size)
+        assertFalse(client.saveContact(Contact("cc".repeat(32), Contact.TYPE_COMPANION, "Cy", 0, 0.0, 0.0)))
     }
 
     @Test

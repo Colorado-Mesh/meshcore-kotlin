@@ -223,6 +223,7 @@ class CompanionClient(
     @Synchronized
     fun start() {
         started = true
+        savesStopped = false
         enqueue(Job.AppStart)
     }
 
@@ -252,12 +253,14 @@ class CompanionClient(
      * only when its user has asked for that. It may be called as soon as [start] has been: a save
      * asked for during start-up is held until start-up has finished, then goes in turn, and a
      * message queued after it goes after it. False, with no listener call, before [start] or for
-     * a key that is not 64 lowercase hex characters; otherwise [Listener.onContactSaved] says how
-     * it went, once, also when start-up fails or the link closes first ([onLinkClosed]).
+     * a key that is not 64 lowercase hex characters, after the link has closed ([onLinkClosed]),
+     * or once a save on this connection has gone unanswered (see [finish]); otherwise
+     * [Listener.onContactSaved] says how it went, once, also when start-up fails or the link
+     * closes first.
      */
     @Synchronized
     fun saveContact(contact: Contact): Boolean {
-        if (!started || contact.publicKeyHex.length != 64 || !contact.publicKeyHex.all { it in "0123456789abcdef" }) return false
+        if (!started || savesStopped || contact.publicKeyHex.length != 64 || !contact.publicKeyHex.all { it in "0123456789abcdef" }) return false
         if (ready) enqueue(Job.SaveContact(contact)) else heldSaves.add(contact)
         return true
     }
@@ -268,6 +271,9 @@ class CompanionClient(
      */
     @Synchronized
     fun onLinkClosed() {
+        // Nothing more can be sent: saves and messages are refused until start() runs again.
+        started = false
+        ready = false
         val unanswered = ArrayList<Contact>(heldSaves)
         heldSaves.clear()
         (current as? Job.SaveContact)?.let {
@@ -281,6 +287,13 @@ class CompanionClient(
 
     /** Saves asked for during start-up, sent once it has finished. */
     private val heldSaves = ArrayList<Contact>()
+
+    /**
+     * Set when a save goes unanswered: the radio's answer is a bare OK, which carries nothing to
+     * say which save it is for, so a late one could be taken as the next save's. No more saves
+     * are sent on this connection, and those queued are reported as not saved.
+     */
+    private var savesStopped = false
 
     @Synchronized
     fun sendDirectText(publicKeyHex: String, text: String): Long? {
@@ -558,7 +571,16 @@ class CompanionClient(
                 }
             }
             is Job.Telemetry -> if (!answered) listener.onTelemetry(job.publicKeyHex, TelemetryOutcome.NotSent)
-            is Job.SaveContact -> listener.onContactSaved(job.contact.publicKeyHex, answered, errorCode)
+            is Job.SaveContact -> {
+                listener.onContactSaved(job.contact.publicKeyHex, answered, errorCode)
+                if (!answered && errorCode == null) {
+                    savesStopped = true
+                    val left = queue.filterIsInstance<Job.SaveContact>()
+                    queue.removeAll { it is Job.SaveContact }
+                    if (left.isNotEmpty()) listener.onLog("No answer to a contact save; not sending the ${left.size} after it on this connection")
+                    for (later in left) listener.onContactSaved(later.contact.publicKeyHex, false, null)
+                }
+            }
             is Job.GetChannel -> {
                 slotsLeft--
                 if (slotsLeft == 0) {

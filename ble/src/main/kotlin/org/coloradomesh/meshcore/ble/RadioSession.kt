@@ -60,13 +60,16 @@ class RadioSession(
 
     /**
      * Adds or updates a contact on the radio, as [CompanionClient.saveContact]; only when the
-     * user has asked for that. False when it cannot be sent: before the link is ready, or when
-     * its packets are too small for the frame, which the link would otherwise drop.
+     * user has asked for that. False when it cannot be sent: before the link is ready, during
+     * [onLinkReady] (the client starts just after it returns), after the link has closed, when
+     * its packets are too small for the frame, which the link would otherwise drop, or for the
+     * client's own reasons. A save asked for once the client has started, during start-up, is
+     * held until start-up has finished.
      */
     fun saveContact(contact: Contact): Boolean =
         packetSize >= CompanionFrames.SAVE_CONTACT_BYTES && client.saveContact(contact)
 
-    /** The largest frame the link carries, once it is ready; 0 before. */
+    /** The largest frame the link carries, once it is ready; 0 before, and again once it has closed. */
     @Volatile
     private var packetSize = 0
 
@@ -89,6 +92,7 @@ class RadioSession(
 
     override fun onClosed(reason: String) {
         ticker.shutdownNow()
+        packetSize = 0
         // Saves not yet answered never will be; report them before the link's end.
         client.onLinkClosed()
         closedTo(reason)

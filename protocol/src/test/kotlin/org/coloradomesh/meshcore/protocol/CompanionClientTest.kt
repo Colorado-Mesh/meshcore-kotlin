@@ -2,6 +2,7 @@ package org.coloradomesh.meshcore.protocol
 
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -19,6 +20,7 @@ class CompanionClientTest {
     private val positions = ArrayList<Pair<String, TelemetryOutcome>>()
     private var queueEmpties = 0
     private val startUpFailures = ArrayList<String>()
+    private val savedContacts = ArrayList<Triple<String, Boolean, Int?>>()
     private val contactsRead = ArrayList<Long>()
     private val unanswered = ArrayList<Set<Int>>()
     private var now = 1_800_000_000_000L
@@ -42,6 +44,7 @@ class CompanionClientTest {
             override fun onContactsRead(lastModified: Long) { contactsRead.add(lastModified) }
             override fun onChannelSlotsUnanswered(slots: Set<Int>) { unanswered.add(slots) }
             override fun onStartUpFailed(what: String) { startUpFailures.add(what) }
+            override fun onContactSaved(publicKeyHex: String, saved: Boolean, errorCode: Int?) { savedContacts.add(Triple(publicKeyHex.take(2), saved, errorCode)) }
         },
         clock = { now },
     )
@@ -247,6 +250,23 @@ class CompanionClientTest {
         now += 7_000
         client.tick()
         assertEquals(listOf("the device query"), startUpFailures)
+    }
+
+    @Test
+    fun contactsAreSavedInTurnAndEachIsReported() {
+        val ann = Contact("aa".repeat(32), Contact.TYPE_COMPANION, "Ann", 0, 0.0, 0.0, flags = Contact.FLAG_FAVOURITE)
+        val bob = Contact("bb".repeat(32), Contact.TYPE_COMPANION, "Bob", 0, 0.0, 0.0)
+        assertFalse(client.saveContact(ann))
+        assertFalse(client.saveContact(ann.copy(publicKeyHex = "aa")))
+        startUp()
+        assertTrue(client.saveContact(ann))
+        assertTrue(client.saveContact(bob))
+        assertEquals(0x09, lastSent()[0].toInt())
+        client.onFrame(byteArrayOf(0))
+        assertEquals(0x09, lastSent()[0].toInt())
+        // The radio's list is full.
+        client.onFrame(byteArrayOf(1, 3))
+        assertEquals(listOf(Triple("aa", true, null), Triple("bb", false, 3)), savedContacts)
     }
 
     @Test

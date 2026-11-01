@@ -3,6 +3,7 @@ package org.coloradomesh.meshcore.ble
 import android.bluetooth.BluetoothManager
 import android.content.Context
 import org.coloradomesh.meshcore.protocol.CompanionClient
+import org.coloradomesh.meshcore.protocol.Contact
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
@@ -55,6 +56,9 @@ class RadioSession(
 
     /** Returns the id the listener's direct-message result will carry, or null when the radio cannot take it now. */
     fun sendDirectText(publicKeyHex: String, text: String): Long? = client.sendDirectText(publicKeyHex, text)
+
+    /** Adds or updates a contact on the radio; false before start-up has finished. */
+    fun saveContact(contact: Contact): Boolean = client.saveContact(contact)
 
     /** Ask these companions, by public key, for their position about every [intervalMs]; empty stops. */
     fun setTracking(publicKeys: Set<String>, intervalMs: Long) = client.setTracking(publicKeys, intervalMs)

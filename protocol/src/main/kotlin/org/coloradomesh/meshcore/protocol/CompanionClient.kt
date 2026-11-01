@@ -151,6 +151,12 @@ class CompanionClient(
          * should disconnect and try again later rather than wait.
          */
         fun onStartUpFailed(what: String) {}
+
+        /**
+         * How a [saveContact] ended: [saved], or not, with the radio's error code (null when it
+         * did not answer). Called once per contact.
+         */
+        fun onContactSaved(publicKeyHex: String, saved: Boolean, errorCode: Int?) {}
     }
 
     private sealed interface Job {
@@ -163,6 +169,7 @@ class CompanionClient(
         data class SendDirect(val id: Long) : Job
         data object Battery : Job
         data object GetTime : Job
+        data class SaveContact(val contact: Contact) : Job
 
         /** Set the radio's clock; [behindSeconds] is how far behind this client's it was (negative: ahead). */
         data class SetTime(val behindSeconds: Long) : Job
@@ -215,8 +222,11 @@ class CompanionClient(
 
     @Synchronized
     fun start() {
+        started = true
         enqueue(Job.AppStart)
     }
+
+    private var started = false
 
     /** Which try of the current start-up command this is. */
     private var startTry = 1
@@ -236,6 +246,20 @@ class CompanionClient(
      * characters). Returns the id that [Listener.onDirectResult] will report it under, or null,
      * with no listener call, when it cannot be queued: start-up is not finished or too many wait.
      */
+    /**
+     * Queue adding [contact] to the radio, or updating the radio's contact with its key, as in
+     * [CompanionFrames.saveContact]. It may be queued during start-up, as soon as [start] has been
+     * called, and goes in turn after what is queued already; a message queued after it goes after
+     * it. False, with no listener call, before [start] or for a key that is not 64 hex
+     * characters; otherwise [Listener.onContactSaved] says how it went.
+     */
+    @Synchronized
+    fun saveContact(contact: Contact): Boolean {
+        if (!started || contact.publicKeyHex.length != 64 || !contact.publicKeyHex.all { it in "0123456789abcdef" }) return false
+        enqueue(Job.SaveContact(contact))
+        return true
+    }
+
     @Synchronized
     fun sendDirectText(publicKeyHex: String, text: String): Long? {
         if (!ready || outbound.size >= MAX_OUTSTANDING_DIRECTS || publicKeyHex.length < CompanionFrames.KEY_PREFIX_BYTES * 2) {
@@ -461,6 +485,7 @@ class CompanionClient(
                 if (setting) queue.addFirst(Job.SetTime(behind))
                 finish(job)
             }
+            is Job.SaveContact -> if (frame == CompanionFrame.Ok) finish(job)
             is Job.SetTime -> if (frame == CompanionFrame.Ok) {
                 val which = if (job.behindSeconds > 0) "behind" else "ahead"
                 listener.onLog("Set the radio's clock to this device's; it was ${kotlin.math.abs(job.behindSeconds)} s $which")
@@ -507,6 +532,7 @@ class CompanionClient(
                 }
             }
             is Job.Telemetry -> if (!answered) listener.onTelemetry(job.publicKeyHex, TelemetryOutcome.NotSent)
+            is Job.SaveContact -> listener.onContactSaved(job.contact.publicKeyHex, answered, errorCode)
             is Job.GetChannel -> {
                 slotsLeft--
                 if (slotsLeft == 0) {
@@ -562,6 +588,7 @@ class CompanionClient(
             CompanionFrames.sendDirectText(message.publicKeyHex, message.attempt, message.timestamp, message.text)
         }
         Job.Battery -> CompanionFrames.getBattery()
+        is Job.SaveContact -> CompanionFrames.saveContact(job.contact)
         is Job.Telemetry -> CompanionFrames.telemetryRequest(job.publicKeyHex)
         Job.GetTime -> CompanionFrames.getDeviceTime()
         // The time when it is sent, not when it was queued.
@@ -579,6 +606,7 @@ class CompanionClient(
         Job.Battery -> "the battery request"
         is Job.Telemetry -> "a position request"
         Job.GetTime -> "the request for its clock"
+        is Job.SaveContact -> "saving the contact ${job.contact.name}"
         is Job.SetTime -> "setting its clock"
     }
 

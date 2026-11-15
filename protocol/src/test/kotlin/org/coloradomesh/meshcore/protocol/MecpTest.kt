@@ -6,7 +6,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** Examples from the MECP project's README, read the way its reference decoder reads them. */
+/** Examples from the MECP project's README and brief, read as MECP 1.2.1 says. */
 class MecpTest {
     private fun describe(text: String) = Mecp.describe(Mecp.parse(text)!!)
 
@@ -66,9 +66,10 @@ class MecpTest {
     }
 
     @Test
-    fun aSeverityAloneIsEnough() {
-        assertEquals("⚠️ SAFETY", describe("MECP/2/"))
-        assertEquals("⚠️ SAFETY", describe("MECP/2"))
+    fun aMessageNeedsAtLeastOneCode() {
+        // Since MECP 1.2 a severity alone is not a message, so it is left as ordinary text.
+        assertNull(Mecp.parse("MECP/2/"))
+        assertNull(Mecp.parse("MECP/2"))
     }
 
     @Test
@@ -77,6 +78,18 @@ class MecpTest {
         assertNull(Mecp.parse("MECP/7/M01"))
         assertNull(Mecp.parse("MECP/"))
         assertNull(Mecp.parse("hello MECP/0/M01"))
+        assertNull(Mecp.parse("MECP/1/m01 x"))
+        assertNull(Mecp.parse("MECP/1/M01 "))
+        assertNull(Mecp.parse("MECP/1/M01  hurt"))
+    }
+
+    @Test
+    fun aMessageIsOneLine() {
+        assertEquals("MECP/1/M01 hurt", Mecp.parse("MECP/1/M01 hurt\r\n")!!.raw)
+        assertEquals("MECP/1/M01", Mecp.parse("MECP/1/M01\n")!!.raw)
+        assertNull(Mecp.parse("MECP/1/M01 hurt\nsecond line"))
+        assertNull(Mecp.parse("MECP/1/M01 hurt\u2028more"))
+        assertNull(Mecp.parse("MECP/1/M01\n\n"))
     }
 
     @Test
@@ -84,6 +97,71 @@ class MecpTest {
         val m = Mecp.parse("MECP/1/P05 95.0,20.0 @2599")!!
         assertNull(m.latitude)
         assertNull(m.timeUtc)
+        assertEquals("95.0,20.0 @2599", m.remainder)
+    }
+
+    @Test
+    fun aGoodPositionAfterABadOneIsFound() {
+        val m = Mecp.parse("MECP/0/M01 P05 95.0,200.0 39.7392,-104.9903")!!
+        assertEquals(39.7392, m.latitude!!, 1e-9)
+        assertEquals(-104.9903, m.longitude!!, 1e-9)
+        assertEquals("95.0,200.0", m.remainder)
+    }
+
+    @Test
+    fun etasInEveryUnit() {
+        assertEquals("ℹ️ ROUTINE: Help coming · ETA 45 min", describe("MECP/3/R02 R03 45min"))
+        assertEquals("ℹ️ ROUTINE: Help coming · ETA 1 h 30 min", describe("MECP/3/R02 R03 1h30min"))
+        assertEquals("ℹ️ ROUTINE: Help coming · ETA 1 h 30 min", describe("MECP/3/R02 R03 ETA 1h 30min"))
+        assertEquals("ℹ️ ROUTINE: Help coming · ETA 2 h", describe("MECP/3/R02 R03 2h"))
+        assertEquals("ℹ️ ROUTINE: Help coming · ETA 2 d", describe("MECP/3/R02 R03 2d"))
+        assertEquals(2, Mecp.parse("MECP/3/R03 90s")!!.etaMinutes)
+        assertNull(Mecp.parse("MECP/3/R03 0min")!!.etaMinutes)
+        assertNull(Mecp.parse("MECP/3/R03 99999999999999999999min")!!.etaMinutes)
+    }
+
+    @Test
+    fun anEtaComesAnywhereAfterR03ButABareNumberOnlyFirst() {
+        val m = Mecp.parse("MECP/2/C01 R03 P05 47.3769,12.1048 45min")!!
+        assertEquals(45, m.etaMinutes)
+        assertTrue(m.hasPosition)
+        assertNull(m.remainder)
+        assertNull(Mecp.parse("MECP/2/C01 R03 1pax 45")!!.etaMinutes)
+    }
+
+    @Test
+    fun detailsInTheirLooserForms() {
+        val m = Mecp.parse("MECP/0/M01 4 PAX +48.8566, 2.3522 @6:30 ~vk2/ok1abc/p @zh_CN #base_camp")!!
+        assertEquals(4, m.people)
+        assertEquals(48.8566, m.latitude!!, 1e-9)
+        assertEquals("0630", m.timeUtc)
+        assertEquals("VK2/OK1ABC/P", m.callsign)
+        assertEquals("zh-cn", m.language)
+        assertEquals("base_camp", m.reference)
+        assertNull(m.remainder)
+    }
+
+    @Test
+    fun aDetailNeedsBoundariesAroundIt() {
+        val m = Mecp.parse("MECP/3/L01 meet@1430 3paxmore #café")!!
+        assertNull(m.timeUtc)
+        assertNull(m.people)
+        assertNull(m.reference)
+        assertEquals("meet@1430 3paxmore #café", m.remainder)
+    }
+
+    @Test
+    fun punctuationAroundADetailIsNotLeftOver() {
+        val m = Mecp.parse("MECP/2/C08 (#tag), @1430.")!!
+        assertEquals("tag", m.reference)
+        assertEquals("1430", m.timeUtc)
+        assertNull(m.remainder)
+    }
+
+    @Test
+    fun theNewMedicalSupplyDropCode() {
+        assertEquals("🚨 URGENT: Medical supply drop needed · At GPS coordinates · 39.7392, -104.9903",
+            describe("MECP/1/M16 P05 39.7392,-104.9903"))
     }
 
     @Test
@@ -104,7 +182,7 @@ class MecpTest {
 
     @Test
     fun theTableHasEveryCode() {
-        assertEquals(108, MecpCodes.CODES.size)
+        assertEquals(109, MecpCodes.CODES.size)
         assertEquals(12, MecpCodes.CATEGORIES.size)
         assertTrue(MecpCodes.CODES.keys.all { it[0] in MecpCodes.CATEGORIES })
     }

@@ -159,6 +159,24 @@ class MecpTest {
     }
 
     @Test
+    fun otherPunctuationIsKeptAsWritten() {
+        assertEquals("A / B", Mecp.parse("MECP/2/C08 A / B")!!.remainder)
+        assertEquals("x", Mecp.parse("MECP/3/L01 x,@1430")!!.remainder)
+        assertEquals("near - the bridge.", Mecp.parse("MECP/2/T02 near - the bridge. @1430")!!.remainder)
+    }
+
+    @Test
+    fun aMessageIsAtMost200Bytes() {
+        // "MECP/3/L15 " is 11 bytes, and each 界 is 3, so 63 of them make exactly 200.
+        val atLimit = "MECP/3/L15 " + "界".repeat(63)
+        assertEquals(200, atLimit.toByteArray(Charsets.UTF_8).size)
+        assertTrue(Mecp.parse(atLimit) != null)
+        assertTrue(Mecp.parse(atLimit + "\r\n") != null)
+        assertNull(Mecp.parse(atLimit + "界"))
+        assertNull(Mecp.parse("MECP/3/L15 " + "x".repeat(190)))
+    }
+
+    @Test
     fun theNewMedicalSupplyDropCode() {
         assertEquals("🚨 URGENT: Medical supply drop needed · At GPS coordinates · 39.7392, -104.9903",
             describe("MECP/1/M16 P05 39.7392,-104.9903"))

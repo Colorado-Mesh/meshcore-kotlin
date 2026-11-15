@@ -115,7 +115,7 @@ object Mecp {
     /**
      * Decodes [text] when it is an MECP message, or returns null. The prefix and codes are
      * case-sensitive, a message needs a severity from 0 to 3 and at least one code, and it must be a
-     * single line: one final line ending is allowed and dropped.
+     * single line of at most 200 bytes: one final line ending is allowed and dropped.
      */
     fun parse(text: String): Message? {
         val line = when {
@@ -124,6 +124,7 @@ object Mecp {
             else -> text
         }
         if (line.any { it == '\r' || it == '\n' || it == '\u0085' || it == '\u2028' || it == '\u2029' }) return null
+        if (line.toByteArray(Charsets.UTF_8).size > MAX_BYTES) return null
         val match = MESSAGE.matchEntire(line) ?: return null
         val severity = match.groupValues[1].toInt()
         val codes = match.groupValues[2].split(' ')
@@ -249,22 +250,39 @@ object Mecp {
         return null
     }
 
-    /** [text] without the [used] tokens and the [laterCodes], and without stray boundary marks, or null. */
+    /**
+     * [text] without the [used] tokens and the [laterCodes], or null when nothing is left. Boundary
+     * marks touching a token go with it, so `(#tag),` leaves nothing; any other punctuation stays
+     * as written, so `A / B` is kept whole.
+     */
     private fun remainder(text: String, used: List<IntRange>, laterCodes: List<String>): String? {
         if (text.isEmpty()) return null
-        val kept = StringBuilder()
-        text.forEachIndexed { i, c -> kept.append(if (used.any { i in it }) ' ' else c) }
-        return kept.split(' ')
-            .filter { word -> word.isNotEmpty() && word !in laterCodes && !word.all { it in BOUNDARY_CHARS } }
+        val marked = StringBuilder()
+        text.forEachIndexed { i, c -> marked.append(if (used.any { i in it }) TAKEN else c) }
+        return marked.split(' ')
+            .map { word -> word.replace(TAKEN_WITH_MARKS, "") }
+            .filter { word -> word.isNotEmpty() && word !in laterCodes }
             .joinToString(" ")
             .ifEmpty { null }
     }
+
+    /** Stands in for a character of a token that was used; NUL cannot arrive in chat text from the radio. */
+    private const val TAKEN = '\u0000'
+
+    /** A used token with the boundary marks on either side of it, within one word. */
+    private val TAKEN_WITH_MARKS = Regex("$B*$TAKEN+$B*")
 
     private fun number(m: MatchResult, group: Int): Long? = m.groupValues[group].toLongOrNull()
 
     private fun times(a: Long?, b: Long): Long? = a?.let { runCatching { Math.multiplyExact(it, b) }.getOrNull() }
 
     private fun sum(a: Long?, b: Long?): Long? = if (a == null || b == null) null else runCatching { Math.addExact(a, b) }.getOrNull()
+
+    /**
+     * §6.1: a message is at most 200 bytes of UTF-8, counted without the final line ending.
+     * MeshCore text is shorter than this, so it matters only for text from elsewhere.
+     */
+    private const val MAX_BYTES = 200
 
     /** §6.1: a callsign is at most 12 characters. */
     private const val MAX_CALLSIGN = 12

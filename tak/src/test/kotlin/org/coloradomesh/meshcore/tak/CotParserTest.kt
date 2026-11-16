@@ -61,6 +61,13 @@ class CotParserTest {
     }
 
     @Test
+    fun doesNotReadAnAttributeFromInsideAnotherAttributesValue() {
+        // Well formed: a raw ' is allowed in a double-quoted value. The room id is the real id attribute.
+        val chat = geochat(chat = "chatroom=\"a id='MESHCORE-CH-0'\" id=\"MESHCORE-abc\" senderCallsign=\"VIPER\"")
+        assertEquals("MESHCORE-abc", CotParser.parseGeoChat(chat)?.roomId)
+    }
+
+    @Test
     fun takesTheSenderOnlyFromTheEventUid() {
         assertEquals("ANDROID-1", CotParser.parseGeoChat(geochat())?.senderUid)
         assertNull(CotParser.parseGeoChat(geochat(uid = "custom-uid-1")))

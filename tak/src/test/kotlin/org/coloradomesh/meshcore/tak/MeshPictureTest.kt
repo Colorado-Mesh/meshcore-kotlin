@@ -216,6 +216,24 @@ class MeshPictureTest {
     }
 
     @Test
+    fun expiredMecpMarkersDoNotCrowdOutANewOne() {
+        val picture = picture()
+        // Fill the 50-marker limit with MAYDAYs, which last a day.
+        for (i in 1..50) {
+            val mayday = Mecp.parse("MECP/0/M01 48.6520,20.1305")
+            assertNotNull(mayday)
+            assertNotNull(picture.putMecp("Sender $i", "on #emergency", mayday!!, now))
+        }
+        // A day and an hour later, without the map being refreshed in between, a ROUTINE message arrives.
+        val later = now + 25 * 3_600
+        val routine = Mecp.parse("MECP/3/M01 48.6520,20.1305")
+        assertNotNull(routine)
+        val place = picture.putMecp("Ridge", "on #emergency", routine!!, later)
+        assertNotNull(place)
+        assertEquals(listOf(place!!.uid), picture.markers(later).map { it.uid })
+    }
+
+    @Test
     fun clearForgetsTheRadio() {
         val picture = picture()
         picture.setChannels(listOf(Channel(0, "Public", Channel.Kind.PUBLIC)))

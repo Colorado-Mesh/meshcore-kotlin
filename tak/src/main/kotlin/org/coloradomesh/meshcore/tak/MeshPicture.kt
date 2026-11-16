@@ -149,6 +149,8 @@ class MeshPicture(private val appName: String) {
         val lat = message.latitude ?: return null
         val lon = message.longitude ?: return null
         mecpMarks.remove(uid)
+        // Expired markers go first, so the limit below never drops a live message to keep a stale one.
+        dropExpiredMecp(nowSeconds)
         mecpMarks[uid] = MecpMark(uid, sender, where, message, lat, lon, nowSeconds)
         while (mecpMarks.size > MAX_MECP_MARKS) evictOne()
         MecpPlace(uid, sender, lat, lon)
@@ -198,8 +200,13 @@ class MeshPicture(private val appName: String) {
     fun companionNamed(name: String): Contact? =
         contacts.values.firstOrNull { it.type == Contact.TYPE_COMPANION && displayName(it) == name }
 
-    private fun mecpMarkers(nowSeconds: Long): List<MarkerSpec> = synchronized(mecpMarks) {
+    /** Drops MECP markers past their lifetime. Call holding the lock on [mecpMarks]. */
+    private fun dropExpiredMecp(nowSeconds: Long) {
         mecpMarks.values.removeAll { nowSeconds - it.heardAt >= lifetime(it.message).seconds }
+    }
+
+    private fun mecpMarkers(nowSeconds: Long): List<MarkerSpec> = synchronized(mecpMarks) {
+        dropExpiredMecp(nowSeconds)
         mecpMarks.values.map { mark ->
             val m = mark.message
             val left = lifetime(m).minusSeconds(nowSeconds - mark.heardAt)

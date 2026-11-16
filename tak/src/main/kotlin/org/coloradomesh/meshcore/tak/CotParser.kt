@@ -33,15 +33,25 @@ object CotParser {
     private val MESSAGE_ID_PATTERN = Regex("^[A-Za-z0-9-]{1,64}$")
     private val CONTROL_CHARS = Regex("\\p{Cc}+")
 
+    /** One attribute, `name="value"` or `name='value'`; matched in order so a value is never read as an attribute. */
+    private val ATTRIBUTE = Regex("\\s([A-Za-z_:][\\w:.-]*)\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)')")
+
     private fun openTag(xml: String, name: String): String? =
         Regex("<" + Regex.escape(name) + "(?=[\\s/>])[^>]*>").find(xml)?.value
 
+    /**
+     * The value of attribute [name] in [tag]. Attributes are read one after another, each with its
+     * whole quoted value, so `id='x'` written inside another attribute's value is not mistaken for
+     * an `id` attribute (XML allows a raw `'` in a double-quoted value).
+     */
     private fun attr(tag: String?, name: String): String? {
         if (tag == null) return null
-        val match = Regex("\\s" + Regex.escape(name) + "\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)')").find(tag)
-            ?: return null
-        val raw = match.groups[1]?.value ?: match.groups[2]?.value ?: ""
-        return unescapeXml(raw)
+        for (match in ATTRIBUTE.findAll(tag)) {
+            if (match.groupValues[1] != name) continue
+            val raw = match.groups[2]?.value ?: match.groups[3]?.value ?: ""
+            return unescapeXml(raw)
+        }
+        return null
     }
 
     /** The event's `type` attribute, or null when the text is not an event. */

@@ -36,7 +36,7 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          ./gradlew :protocol:test :ble:assembleRelease --continue 2>&1 | tee build.log
+          ./gradlew :protocol:test :tak:test :ble:assembleRelease --continue 2>&1 | tee build.log
 
       # Puts the failing lines on the run's summary page, where they can be read without
       # opening the full log.

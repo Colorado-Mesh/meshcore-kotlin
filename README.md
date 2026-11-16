@@ -4,6 +4,7 @@ Kotlin code for talking to a [MeshCore](https://docs.meshcore.io/) companion rad
 
 - [MeshCore TAK Bridge](https://github.com/Colorado-Mesh/meshcore-tak-bridge), which presents the mesh to ATAK on a phone.
 - [WearMesh](https://github.com/Colorado-Mesh/wearmesh), MeshCore messaging on a Wear OS watch with no phone.
+- [MeshCore for WearTAK](https://github.com/Colorado-Mesh/weartak-meshcore), a WearTAK plugin that connects WearTAK on a watch to a MeshCore radio (in development).
 
 ## Modules
 
@@ -11,6 +12,7 @@ Kotlin code for talking to a [MeshCore](https://docs.meshcore.io/) companion rad
 | --- | --- | --- |
 | `protocol` | `org.coloradomesh.meshcore.protocol` | The companion protocol in pure Kotlin, with no Android dependencies: the frame codec (`Companion.kt`), the command queue that runs a session with a radio (`CompanionClient.kt`), telemetry (`CayenneLpp.kt`), battery estimates (`RadioBattery.kt`), `@[Name]` replies (`ChannelReplies.kt`) and MECP emergency messages (`Mecp.kt`). Unit tests run on the JVM. |
 | `ble` | `org.coloradomesh.meshcore.ble` | The Bluetooth LE side, as an Android library: `GattLink` (one connection, every step queued and time-limited, retries, PIN pairing), `RadioScanner`, and `RadioSession`, which joins a link to a protocol client. |
+| `tak` | `org.coloradomesh.meshcore.tak` | How the mesh is shown in TAK apps (ATAK, WearTAK), in pure Kotlin: Cursor on Target events (`CotEvents`: markers, contacts, GeoChat, delivery receipts, emergency alerts, deletes, ping and pong), reading the events a TAK app sends (`CotParser`), stream framing (`CotFramer`), and `MeshPicture`, which turns what a radio knows into TAK markers and chat: nodes with a position as markers, each channel as a contact, direct messages, MECP spot markers. Every app gives the same node, channel or MECP message the same uid and callsign. Unit tests run on the JVM. |
 
 The code only reads from a radio, sends text, and asks tracked nodes for their position. Nothing in it changes a radio's settings, channels, paths or keys. There are two exceptions, each used only when an app asks for it:
 
@@ -38,6 +40,8 @@ dependencies {
     implementation("org.coloradomesh.meshcore:ble")       // brings in protocol too
     // or, for the protocol alone:
     implementation("org.coloradomesh.meshcore:protocol")
+    // and, for an app that shows the mesh in ATAK or WearTAK:
+    implementation("org.coloradomesh.meshcore:tak")       // brings in protocol too
 }
 ```
 
@@ -48,7 +52,7 @@ To move an app to a newer version of this code: `git -C meshcore-kotlin pull ori
 ## Build and test
 
 ```bash
-./gradlew :protocol:test :ble:assembleDebug
+./gradlew :protocol:test :tak:test :ble:assembleDebug
 ```
 
 Needs JDK 17 and the Android SDK (compile SDK 34).
@@ -60,6 +64,8 @@ A change here reaches both apps, so test it in both before merging: point each a
 ## History
 
 The code began in MeshCore TAK Bridge (`protocol/` and `app/.../ble/`, up to commit `33baf18`) and moved here in October 2026, when WearMesh needed it too. One change came with the move: `CompanionClient` takes the name the app gives the radio (`appName`).
+
+The `tak` module also began in MeshCore TAK Bridge (its `cot` module, and `app/.../MeshPicture.kt`, up to commit `100eeb6`) and moved here in November 2026, for the WearTAK plugin. The package changed from `org.coloradomesh.takbridge.cot` to `org.coloradomesh.meshcore.tak`, and `MeshPicture` takes the name of the app it is shown through (`appName`), which appears in marker remarks.
 
 ## License
 

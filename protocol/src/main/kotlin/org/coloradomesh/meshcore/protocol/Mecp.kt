@@ -207,7 +207,8 @@ object Mecp {
 
     /**
      * The message in English, on one line: the headline, then what each code means, then the
-     * details from the free text, then whatever free text is left, in quotes.
+     * details from the free text, then whatever free text is left, in quotes, followed by the
+     * sender's language when the message names one.
      * `🆘 MAYDAY: Injury · Fracture / immobile · At GPS coordinates · 2 people · 48.6520, 20.1305`
      */
     fun describe(message: Message): String {
@@ -219,9 +220,25 @@ object Mecp {
         message.etaMinutes?.let { duration(it).let { eta -> if (eta !in filled) parts.add("ETA $eta") } }
         message.reference?.let { parts.add("incident #$it") }
         message.callsign?.let { parts.add("callsign $it") }
-        message.remainder?.let { parts.add("“$it”") }
+        // §6.1: the language hint is shown, an unknown one as written, after the text it describes.
+        val language = message.language?.let { languageName(it) ?: it }
+        when {
+            message.remainder != null && language != null -> parts.add("“${message.remainder}” ($language)")
+            message.remainder != null -> parts.add("“${message.remainder}”")
+            language != null -> parts.add(if (language == message.language) "language $language" else "in $language")
+        }
         val head = headline(message)
         return if (parts.isEmpty()) head else "$head: ${parts.joinToString(" · ")}"
+    }
+
+    /**
+     * The English name of the language a hint names (`German` for `de`, `Chinese` for `zh-cn`),
+     * or null when it names none that the system knows. Such a hint is shown as written.
+     */
+    fun languageName(tag: String): String? {
+        val locale = Locale.forLanguageTag(tag)
+        val name = locale.getDisplayLanguage(Locale.ENGLISH)
+        return name.takeIf { it.isNotEmpty() && !it.equals(locale.language, ignoreCase = true) }
     }
 
     /** Coordinates as MECP writes them, with up to 4 decimals (about 11 m). */

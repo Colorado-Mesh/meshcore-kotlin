@@ -55,9 +55,18 @@ class MecpTest {
     fun aBeaconWithTimeCallsignAndReference() {
         assertEquals(
             "🆘 MAYDAY: Automated distress beacon active — sender may be unresponsive · Injury · At GPS coordinates · " +
-                "48.6500, 20.1300 · 14:30 UTC · incident #A1 · callsign W0RMT",
+                "48.6500, 20.1300 · 14:30 UTC · incident #A1 · callsign W0RMT · in English",
             describe("MECP/0/B01 M01 P05 48.65,20.13 @1430 #A1 ~W0RMT @en"),
         )
+    }
+
+    @Test
+    fun theLanguageHintIsShownAndAnUnknownOneAsWritten() {
+        assertEquals("ℹ️ ROUTINE: Summit reached · “Gipfel erreicht” (German)", describe("MECP/3/L04 Gipfel erreicht @de"))
+        assertEquals("ℹ️ ROUTINE: Summit reached · “Gipfel” (zzz-zz)", describe("MECP/3/L04 Gipfel @zzz-ZZ"))
+        assertEquals("ℹ️ ROUTINE: Summit reached · language zzz-zz", describe("MECP/3/L04 @zzz-ZZ"))
+        assertEquals("Chinese", Mecp.languageName("zh-cn"))
+        assertNull(Mecp.languageName("zzz-zz"))
     }
 
     @Test

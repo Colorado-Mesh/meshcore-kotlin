@@ -41,7 +41,7 @@ data class ChatSpec(
     val senderUid: String,
     val senderCallsign: String,
     val text: String,
-    /** Unique per message; ATAK drops a repeated id as a duplicate. */
+    /** Unique per message; ATAK drops a repeated id as a duplicate. 1-64 letters, digits or hyphens. */
     val messageId: String,
     /** When the message was sent. Never reported later than the event time. */
     val sentAt: Instant,
@@ -128,6 +128,9 @@ object CotEvents {
 
     /** A GeoChat message addressed to a room. */
     fun geoChat(spec: ChatSpec, now: Instant): String {
+        require(CotParser.MESSAGE_ID_PATTERN.matches(spec.messageId)) {
+            "message id must be 1-64 letters, digits or hyphens, so it survives the uid round trip"
+        }
         val t = time(now)
         val sent = time(if (spec.sentAt.isAfter(now)) now else spec.sentAt)
         val room = escapeXml(spec.room)

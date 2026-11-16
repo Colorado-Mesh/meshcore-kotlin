@@ -30,22 +30,55 @@ object CotParser {
     private const val MAX_UID_LENGTH = 128
 
     private val UID_PATTERN = Regex("^[A-Za-z0-9_.:@-]{1,128}$")
-    private val MESSAGE_ID_PATTERN = Regex("^[A-Za-z0-9-]{1,64}$")
+    /** What a message id may be: the last dot-separated part of a GeoChat uid, so no dots. */
+    internal val MESSAGE_ID_PATTERN = Regex("^[A-Za-z0-9-]{1,64}$")
     private val CONTROL_CHARS = Regex("\\p{Cc}+")
 
     /** One attribute, `name="value"` or `name='value'`; matched in order so a value is never read as an attribute. */
     private val ATTRIBUTE = Regex("\\s([A-Za-z_:][\\w:.-]*)\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)')")
 
-    /**
-     * The rest of an opening tag after its name: up to the first `>` that is not inside a quoted
-     * attribute value, since XML allows `>` in one (`chatroom="Ops > east"`).
-     */
-    private const val TAG_REST = "(?:[^>\"']|\"[^\"]*\"|'[^']*')*>"
+    /** Longest opening tag read; a real CoT tag is a few hundred characters. */
+    private const val MAX_TAG_LENGTH = 4096
+    private const val NO_QUOTE = '\u0000'
 
-    private val REMARKS_OPEN = Regex("<remarks(?=[\\s/>])$TAG_REST")
+    /**
+     * Where the first opening tag named [name] sits in [xml], from its `<` to its closing `>`.
+     * The tag ends at the first `>` that is not inside a quoted attribute value, since XML allows
+     * `>` in one (`chatroom="Ops > east"`). A plain scan, not a regex, so a long tag costs no stack.
+     * Null when there is no such tag, or it is unterminated or longer than [MAX_TAG_LENGTH].
+     */
+    private fun openTagRange(xml: String, name: String): IntRange? {
+        val prefix = "<$name"
+        var from = 0
+        while (true) {
+            val start = xml.indexOf(prefix, from)
+            if (start < 0) return null
+            val next = xml.getOrNull(start + prefix.length)
+            if (next != null && (next.isWhitespace() || next == '/' || next == '>')) {
+                val end = tagEnd(xml, start + prefix.length, start + MAX_TAG_LENGTH)
+                return if (end < 0) null else start..end
+            }
+            from = start + 1
+        }
+    }
+
+    /** Index of the `>` closing a tag, scanning [xml] from [from] up to [limit], or -1. */
+    private fun tagEnd(xml: String, from: Int, limit: Int): Int {
+        var quote = NO_QUOTE
+        val stop = minOf(xml.length, limit)
+        for (i in from until stop) {
+            val c = xml[i]
+            when {
+                quote != NO_QUOTE -> if (c == quote) quote = NO_QUOTE
+                c == '"' || c == '\'' -> quote = c
+                c == '>' -> return i
+            }
+        }
+        return -1
+    }
 
     private fun openTag(xml: String, name: String): String? =
-        Regex("<" + Regex.escape(name) + "(?=[\\s/>])" + TAG_REST).find(xml)?.value
+        openTagRange(xml, name)?.let { xml.substring(it.first, it.last + 1) }
 
     /**
      * The value of attribute [name] in [tag]. Attributes are read one after another, each with its
@@ -92,9 +125,9 @@ object CotParser {
     }
 
     private fun remarksText(xml: String): String? {
-        val open = REMARKS_OPEN.find(xml) ?: return null
-        if (open.value.endsWith("/>")) return null
-        val bodyStart = open.range.last + 1
+        val open = openTagRange(xml, "remarks") ?: return null
+        if (xml[open.last - 1] == '/') return null
+        val bodyStart = open.last + 1
         val end = xml.indexOf("</remarks>", bodyStart)
         return if (end < 0) null else unescapeXml(xml.substring(bodyStart, end))
     }

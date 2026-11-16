@@ -171,4 +171,19 @@ class CotParserTest {
         assertEquals("ANDROID-1a2b", chat.roomId)
         assertEquals("SENDER-1", chat.senderUid)
     }
+
+    @Test
+    fun aVeryLongOpeningTagIsRejectedWithoutOverflowingTheStack() {
+        val padded = geochat().replaceFirst("<event ", "<event " + " ".repeat(100_000))
+        assertNull(CotParser.eventType(padded))
+        assertNull(CotParser.parseGeoChat(padded))
+        val quoted = geochat().replaceFirst("<event ", "<event junk=\"" + "x".repeat(100_000) + "\" ")
+        assertNull(CotParser.eventType(quoted))
+    }
+
+    @Test
+    fun aQuotedGreaterThanDoesNotEndTheTag() {
+        val chat = CotParser.parseGeoChat(geochat(chat = "chatroom=\"Ops > east\" id=\"Ops > east\" senderCallsign=\"VIPER\""))
+        assertEquals("Ops > east", chat?.room)
+    }
 }

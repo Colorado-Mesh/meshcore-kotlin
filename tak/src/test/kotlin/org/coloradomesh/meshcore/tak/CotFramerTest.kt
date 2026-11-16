@@ -81,4 +81,13 @@ class CotFramerTest {
         val many = (1..50).joinToString("") { event("E$it", "<detail/>") }
         assertEquals(50, framer.push(bytes(many)).size)
     }
+
+    @Test
+    fun keepsEventsThatCompletedBeforeAnOversizedPartialOne() {
+        val framer = CotFramer(maxFrameBytes = 256)
+        val read = event("A") + event("B") + "<event uid=\"C\">" + "x".repeat(300)
+        assertEquals(listOf(event("A"), event("B")), framer.push(bytes(read)))
+        assertThrows(CotFrameTooLargeException::class.java) { framer.push(bytes("y")) }
+        assertEquals(listOf(event("D")), framer.push(bytes(event("D"))))
+    }
 }

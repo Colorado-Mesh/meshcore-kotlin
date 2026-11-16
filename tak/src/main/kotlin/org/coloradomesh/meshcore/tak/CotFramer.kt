@@ -15,13 +15,22 @@ class CotFrameTooLargeException(limit: Int) : Exception("CoT event exceeds $limi
 class CotFramer(val maxFrameBytes: Int = DEFAULT_MAX_FRAME_BYTES) {
     private val buffer = ByteArrayOutputStream()
 
+    /** A partial event passed the limit after events that completed; reported on the next push. */
+    private var overflowed = false
+
     /**
      * Add [length] bytes from [chunk] and return the events they completed, in order.
      *
      * @throws CotFrameTooLargeException when the buffered partial event passes the limit. The
-     * framer is reset, and the caller should drop the connection.
+     * framer is reset, and the caller should drop the connection. When the same read also completed
+     * events, they are returned first and the exception comes from the next call, so no complete
+     * event is lost.
      */
     fun push(chunk: ByteArray, length: Int = chunk.size): List<String> {
+        if (overflowed) {
+            overflowed = false
+            throw CotFrameTooLargeException(maxFrameBytes)
+        }
         buffer.write(chunk, 0, length)
         val bytes = buffer.toByteArray()
         val frames = ArrayList<String>()
@@ -37,7 +46,11 @@ class CotFramer(val maxFrameBytes: Int = DEFAULT_MAX_FRAME_BYTES) {
         }
         buffer.reset()
         val remaining = bytes.size - start
-        if (remaining > maxFrameBytes) throw CotFrameTooLargeException(maxFrameBytes)
+        if (remaining > maxFrameBytes) {
+            if (frames.isEmpty()) throw CotFrameTooLargeException(maxFrameBytes)
+            overflowed = true
+            return frames
+        }
         buffer.write(bytes, start, remaining)
         return frames
     }

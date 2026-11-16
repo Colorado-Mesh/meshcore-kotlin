@@ -19,4 +19,12 @@ class XmlTest {
         assertEquals("x&nbsp;y", unescapeXml("x&nbsp;y"))
         assertEquals("ab", unescapeXml("a&#0;b"))
     }
+
+    @Test
+    fun escapingDropsCharactersXmlForbids() {
+        val text = "a\u0000b\u0001c\u001Fd\te\nf\rg\uFFFEh\uFFFFi\uD800j\uDC00k"
+        assertEquals("abcd\te\nf\rghijk", escapeXml(text))
+        assertEquals("map \uD83D\uDDFA ok", escapeXml("map \uD83D\uDDFA ok"))
+        assertEquals("&lt;\u00e9&gt;", escapeXml("<\u00e9>"))
+    }
 }

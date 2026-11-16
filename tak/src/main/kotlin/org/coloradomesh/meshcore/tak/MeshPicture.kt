@@ -109,8 +109,13 @@ class MeshPicture(private val appName: String) {
     @Volatile
     var maxAgeSeconds: Long? = null
 
-    /** Whether a node goes on the map under the current filters. [nowSeconds] is Unix time. */
-    fun isShown(contact: Contact, nowSeconds: Long): Boolean {
+    /**
+     * Whether a node goes on the map under the current filters. [nowSeconds] is Unix time. The
+     * node is judged where the map would draw it, so a newer fix counts even if its advert has no
+     * position.
+     */
+    fun isShown(node: Contact, nowSeconds: Long): Boolean {
+        val contact = placed(node)
         if (!contact.hasPosition) return false
         if (contact.publicKeyHex in tracked && fixes.containsKey(contact.publicKeyHex)) return true
         if (contact.type in ALL_TYPES && contact.type !in shownTypes) return false
@@ -306,7 +311,7 @@ class MeshPicture(private val appName: String) {
     fun noteTalkedTo(contact: Contact, nowSeconds: Long): Boolean {
         if (contact.type != Contact.TYPE_COMPANION) return false
         val added = talkedTo.add(contact.publicKeyHex)
-        return added && !isShown(placed(contact), nowSeconds)
+        return added && !isShown(contact, nowSeconds)
     }
 
     /** A direct message has no prefix added, so it can use every byte the protocol allows. */
@@ -446,7 +451,7 @@ class MeshPicture(private val appName: String) {
     val positionedCount: Int
         get() {
             val now = System.currentTimeMillis() / 1000
-            return contacts.values.count { isShown(placed(it), now) }
+            return contacts.values.count { isShown(it, now) }
         }
 
     val contactCount: Int

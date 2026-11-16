@@ -182,4 +182,13 @@ class CotEventsTest {
         assertTrue(xml.contains("uid=\"MECP-ALERT-1\" type=\"b-a-o-can\""))
         assertTrue(xml.contains("<emergency cancel=\"true\">Ann</emergency>"))
     }
+
+    @Test
+    fun aGeoChatMessageIdSurvivesTheRoundTripOrIsRefused() {
+        val spec = ChatSpec("Mesh Ops", "MESHCHAT-0a1b2c3d", "Bob", "on scene", "dm-1a2b", now)
+        assertEquals("dm-1a2b", CotParser.parseGeoChat(CotEvents.geoChat(spec, now))?.messageId)
+        for (bad in listOf("m.1", "", "a b", "x".repeat(65))) {
+            assertThrows(IllegalArgumentException::class.java) { CotEvents.geoChat(spec.copy(messageId = bad), now) }
+        }
+    }
 }

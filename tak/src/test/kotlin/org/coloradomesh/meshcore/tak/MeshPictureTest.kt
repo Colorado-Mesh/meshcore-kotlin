@@ -5,6 +5,7 @@ import org.coloradomesh.meshcore.protocol.ChannelMessage
 import org.coloradomesh.meshcore.protocol.Contact
 import org.coloradomesh.meshcore.protocol.DirectMessage
 import org.coloradomesh.meshcore.protocol.Mecp
+import org.coloradomesh.meshcore.protocol.Position
 import org.coloradomesh.meshcore.protocol.SelfInfo
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -283,5 +284,18 @@ class MeshPictureTest {
         assertFalse(picture.hasRadio)
         assertEquals(0, picture.contactCount)
         assertTrue(picture.markers(now).isEmpty())
+    }
+
+    @Test
+    fun aTrackedCompanionWithNoAdvertPositionShowsAtItsNewerFix() {
+        val picture = picture()
+        val runner = contact('d', name = "Runner", latitude = 0.0, longitude = 0.0)
+        picture.putContact(runner)
+        assertFalse(picture.isShown(runner, now))
+        picture.tracked = setOf(runner.publicKeyHex)
+        picture.putFix(runner.publicKeyHex, Position(39.9, -105.1, null), now - 10)
+        assertTrue(picture.isShown(runner, now))
+        val marker = picture.markers(now).single { it.uid == picture.markerUid(runner) }
+        assertEquals(39.9, marker.latitude, 1e-9)
     }
 }

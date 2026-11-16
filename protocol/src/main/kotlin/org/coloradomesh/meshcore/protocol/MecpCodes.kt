@@ -3,8 +3,8 @@ package org.coloradomesh.meshcore.protocol
 /**
  * The English MECP code table: what each code means, and the severity and category names.
  *
- * From the MECP project's `languages/en.json` (github.com/xiang-dev-1/MECP, commit ee17ef3, protocol
- * version 1.1, 108 codes), by the MECP contributors, licensed CC BY 4.0
+ * From the MECP project's `languages/en.json` (github.com/mecp-org/MECP, tag v1.2.1, protocol
+ * version 1.2.1, 109 codes), by the MECP contributors, licensed CC BY 4.0
  * (creativecommons.org/licenses/by/4.0). Copied unchanged. The protocol itself is CC0.
  */
 internal object MecpCodes {
@@ -42,6 +42,7 @@ internal object MecpCodes {
         "M13" to "Poisoning / toxic exposure",
         "M14" to "Persons located alive",
         "M15" to "Area searched, no victims found",
+        "M16" to "Medical supply drop needed",
         "T01" to "Road blocked",
         "T02" to "Bridge out",
         "T03" to "Building collapsed",

@@ -50,8 +50,10 @@ reviews:
         (MyMesh.cpp, BaseChatMesh.cpp); ask for a reference when a new one appears. Timing uses
         the injected wall clock, never Thread.sleep or a monotonic clock that stops in sleep.
         ChannelReplies turns "@name" and "@@" into MeshCore's "@[Name]" reply form and must
-        never guess between several matching names. Mecp follows the MECP project's reference
-        decoder; anything that is not MECP is shown exactly as it arrived.
+        never guess between several matching names. Mecp follows MECP 1.2.1 (the decoding
+        patterns, boundaries and validation in §6.1 of github.com/mecp-org/MECP's brief) and must
+        pass MecpConformanceTest, MECP's own cases; a detail that fails validation stays in the
+        free text, and anything that is not MECP is shown exactly as it arrived.
 
     - path: "ble/**"
       instructions: |

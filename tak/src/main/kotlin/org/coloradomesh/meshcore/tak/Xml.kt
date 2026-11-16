@@ -16,20 +16,26 @@ fun escapeXml(text: String): String {
     return out.toString()
 }
 
-private val NUMERIC_ENTITY = Regex("&#(x[0-9a-fA-F]{1,6}|[0-9]{1,7});")
+private val ENTITY = Regex("&(#x[0-9a-fA-F]{1,6}|#[0-9]{1,7}|lt|gt|quot|apos|amp);")
 
-/** Reverse [escapeXml], and resolve numeric character references. Unknown entities are left as is. */
+/**
+ * Reverse [escapeXml], and resolve numeric character references, in one pass over [text]: what a
+ * reference produces is text, never read again as a reference, so `&#38;lt;` is `&lt;`, not `<`.
+ * Unknown entities are left as is; a numeric reference to no valid character is dropped.
+ */
 fun unescapeXml(text: String): String {
     if (!text.contains('&')) return text
-    val numeric = NUMERIC_ENTITY.replace(text) { match ->
-        val body = match.groupValues[1]
-        val code = if (body.startsWith("x")) body.substring(1).toIntOrNull(16) else body.toIntOrNull()
-        if (code != null && code > 0 && Character.isValidCodePoint(code)) String(Character.toChars(code)) else ""
+    return ENTITY.replace(text) { match ->
+        when (val body = match.groupValues[1]) {
+            "lt" -> "<"
+            "gt" -> ">"
+            "quot" -> "\""
+            "apos" -> "'"
+            "amp" -> "&"
+            else -> {
+                val code = if (body.startsWith("#x")) body.substring(2).toIntOrNull(16) else body.substring(1).toIntOrNull()
+                if (code != null && code > 0 && Character.isValidCodePoint(code)) String(Character.toChars(code)) else ""
+            }
+        }
     }
-    return numeric
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&apos;", "'")
-        .replace("&amp;", "&")
 }

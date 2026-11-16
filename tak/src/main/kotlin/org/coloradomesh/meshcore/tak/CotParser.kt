@@ -36,8 +36,16 @@ object CotParser {
     /** One attribute, `name="value"` or `name='value'`; matched in order so a value is never read as an attribute. */
     private val ATTRIBUTE = Regex("\\s([A-Za-z_:][\\w:.-]*)\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)')")
 
+    /**
+     * The rest of an opening tag after its name: up to the first `>` that is not inside a quoted
+     * attribute value, since XML allows `>` in one (`chatroom="Ops > east"`).
+     */
+    private const val TAG_REST = "(?:[^>\"']|\"[^\"]*\"|'[^']*')*>"
+
+    private val REMARKS_OPEN = Regex("<remarks(?=[\\s/>])$TAG_REST")
+
     private fun openTag(xml: String, name: String): String? =
-        Regex("<" + Regex.escape(name) + "(?=[\\s/>])[^>]*>").find(xml)?.value
+        Regex("<" + Regex.escape(name) + "(?=[\\s/>])" + TAG_REST).find(xml)?.value
 
     /**
      * The value of attribute [name] in [tag]. Attributes are read one after another, each with its
@@ -84,7 +92,7 @@ object CotParser {
     }
 
     private fun remarksText(xml: String): String? {
-        val open = Regex("<remarks(?=[\\s>])[^>]*>").find(xml) ?: return null
+        val open = REMARKS_OPEN.find(xml) ?: return null
         if (open.value.endsWith("/>")) return null
         val bodyStart = open.range.last + 1
         val end = xml.indexOf("</remarks>", bodyStart)
@@ -92,11 +100,24 @@ object CotParser {
     }
 
     /**
+     * The sender uid from `<sender uid>.<conversation id>` in a GeoChat event uid. Both parts may
+     * contain dots, so when the event names its conversation ([conversationId], `__chat`'s `id`)
+     * and the uid ends with it, the sender is everything before; otherwise it is the first part.
+     */
+    private fun senderFrom(senderAndRoom: String, conversationId: String?): String? {
+        if (!conversationId.isNullOrEmpty() && senderAndRoom.endsWith(".$conversationId")) {
+            return senderAndRoom.removeSuffix(".$conversationId").takeIf { it.isNotEmpty() }
+        }
+        val firstDot = senderAndRoom.indexOf('.')
+        return if (firstDot > 0) senderAndRoom.substring(0, firstDot) else null
+    }
+
+    /**
      * Parse a GeoChat (`b-t-f`) event into room, sender and text.
      *
      * ATAK's event uids are `GeoChat.<sender uid>.<room>.<message id>`, and the sender is read
-     * only from there. The message id is read from `__chat`'s `messageId`, as ATAK does, or else
-     * from the end of the uid. Delivery (`b-t-f-d`) and read (`b-t-f-r`) receipts are not messages.
+     * only from there (see [senderFrom]). The message id is read from `__chat`'s `messageId`, as
+     * ATAK does, or else from the end of the uid. Delivery (`b-t-f-d`) and read (`b-t-f-r`) receipts are not messages.
      * Returns null for anything else and for a message without a room, sender uid or text.
      */
     fun parseGeoChat(xml: String): InboundChat? {
@@ -106,12 +127,17 @@ object CotParser {
         val room = label(attr(chatTag, "chatroom"), MAX_ROOM_LENGTH) ?: return null
         val text = label(remarksText(xml), MAX_TEXT_LENGTH) ?: return null
 
-        val parts = (attr(eventTag, "uid") ?: "").split('.')
-        if (parts.size < 4 || parts[0] != "GeoChat") return null
-        val senderUid = parts[1]
+        val eventUid = attr(eventTag, "uid") ?: return null
+        if (!eventUid.startsWith("GeoChat.")) return null
+        val uidRest = eventUid.removePrefix("GeoChat.")
+        val lastDot = uidRest.lastIndexOf('.')
+        if (lastDot <= 0) return null
+        val uidMessageId = uidRest.substring(lastDot + 1)
+        val senderAndRoom = uidRest.substring(0, lastDot)
+        val senderUid = senderFrom(senderAndRoom, attr(chatTag, "id")) ?: return null
         if (!UID_PATTERN.matches(senderUid)) return null
         // ATAK writes the id on `__chat` and at the end of the uid; it reads the attribute first.
-        val messageId = listOfNotNull(attr(chatTag, "messageId"), parts.last())
+        val messageId = listOfNotNull(attr(chatTag, "messageId"), uidMessageId)
             .firstOrNull { MESSAGE_ID_PATTERN.matches(it) }
 
         return InboundChat(

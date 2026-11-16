@@ -68,6 +68,28 @@ class CotParserTest {
     }
 
     @Test
+    fun readsATagWithAGreaterThanSignInsideAQuotedValue() {
+        // XML allows a raw > in an attribute value.
+        val chat = CotParser.parseGeoChat(geochat(chat = "chatroom=\"Ops > east\" id=\"Ops > east\" senderCallsign=\"VIPER\""))
+        assertEquals("Ops > east", chat?.room)
+        assertEquals("ANDROID-1", chat?.senderUid)
+    }
+
+    @Test
+    fun keepsDotsInTheSenderUidWhenTheEventNamesItsConversation() {
+        val now = Instant.parse("2026-11-16T12:00:00Z")
+        val xml = CotEvents.geoChat(
+            ChatSpec(room = "Ops.east", senderUid = "ANDROID.9", senderCallsign = "VIPER", text = "hello", messageId = "m1", sentAt = now),
+            now,
+        )
+        val chat = CotParser.parseGeoChat(xml)
+        assertEquals("ANDROID.9", chat?.senderUid)
+        assertEquals("Ops.east", chat?.roomId)
+        assertEquals("m1", chat?.messageId)
+        assertEquals("hello", chat?.text)
+    }
+
+    @Test
     fun takesTheSenderOnlyFromTheEventUid() {
         assertEquals("ANDROID-1", CotParser.parseGeoChat(geochat())?.senderUid)
         assertNull(CotParser.parseGeoChat(geochat(uid = "custom-uid-1")))

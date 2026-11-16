@@ -14,6 +14,7 @@ import java.time.Instant
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * What the bridge knows about the mesh through the connected radio, and how each piece is shown
@@ -43,8 +44,15 @@ class MeshPicture(private val appName: String) {
     @Volatile
     private var self: SelfInfo? = null
 
+    /** A channel and the unique name it is shown by. */
+    private data class Room(val channel: Channel, val name: String)
+
+    /** Channels by slot index, in the radio's order. */
     @Volatile
-    private var rooms: Map<String, Channel> = emptyMap()
+    private var rooms: Map<Int, Room> = emptyMap()
+
+    /** Makes each bridge notice's message id unique, so ATAK never drops one as a duplicate. */
+    private val noticeSequence = AtomicLong()
     private val contacts = ConcurrentHashMap<String, Contact>()
 
     /** Where tracked nodes said they were, and when this phone heard it, by public key. */
@@ -228,6 +236,8 @@ class MeshPicture(private val appName: String) {
     /** How long an MECP marker stays: a day for MAYDAY and URGENT, half a day for SAFETY, two hours for ROUTINE. */
     private fun lifetime(message: Mecp.Message): Duration = MECP_LIFETIMES[message.severity]
 
+    private fun noticeId(now: Instant) = "note-${now.toEpochMilli()}-${noticeSequence.incrementAndGet()}"
+
     private fun digest(text: String): String =
         MessageDigest.getInstance("SHA-256").digest(text.toByteArray(Charsets.UTF_8))
             .take(8).joinToString("") { "%02x".format(it.toInt() and 0xFF) }
@@ -248,10 +258,25 @@ class MeshPicture(private val appName: String) {
         return contact.copy(latitude = fix.position.latitude, longitude = fix.position.longitude, lastAdvert = fix.atSeconds)
     }
 
-    /** Channels that share a name get their slot number added so each has its own room. */
+    /**
+     * Channels that share a name get their slot number added so each has its own name. Channels
+     * are kept by slot, so a made-up name that matches another channel's (`Ops (0)`) loses nothing;
+     * it gets the slot number again until every name is unique.
+     */
     fun setChannels(channels: List<Channel>) {
         val repeated = channels.groupingBy { it.name }.eachCount().filterValues { it > 1 }.keys
-        rooms = channels.associateBy { if (it.name in repeated) "${it.name} (${it.index})" else it.name }
+        val taken = channels.filter { it.name !in repeated }.map { it.name }.toMutableSet()
+        val byIndex = LinkedHashMap<Int, Room>()
+        for (channel in channels) {
+            var name = channel.name
+            if (name in repeated) {
+                name = "$name (${channel.index})"
+                while (name in taken) name = "$name (${channel.index})"
+                taken.add(name)
+            }
+            byIndex[channel.index] = Room(channel, name)
+        }
+        rooms = byIndex
     }
 
     fun clear() {
@@ -290,7 +315,8 @@ class MeshPicture(private val appName: String) {
     /** A received direct message as a line from its sender's contact to the ATAK user. */
     fun directLine(message: DirectMessage, atak: ClientIdentity): ChatSpec {
         val contact = contactFor(message)
-        val id = "dm-${message.senderPrefixHex}-${message.timestamp}-${Integer.toHexString(message.text.hashCode())}"
+        // Deterministic, so a sender's retry of one message is still one message in ATAK.
+        val id = "dm-${message.senderPrefixHex}-${message.timestamp}-${digest(message.text)}"
         return ChatSpec(
             room = atak.callsign,
             roomId = atak.uid,
@@ -309,7 +335,7 @@ class MeshPicture(private val appName: String) {
         senderUid = markerUid(contact),
         senderCallsign = displayName(contact),
         text = text,
-        messageId = "note-${now.toEpochMilli()}",
+        messageId = noticeId(now),
         sentAt = now,
     )
 
@@ -317,9 +343,10 @@ class MeshPicture(private val appName: String) {
 
     /** The channel a chat event from ATAK is for, going by the contact it was addressed to. */
     fun channelFor(room: String, roomId: String?): Channel? =
-        rooms.values.firstOrNull { uidFor(it.index) == roomId } ?: rooms.entries.firstOrNull { callsign(it.value, it.key) == room }?.value
+        rooms.values.firstOrNull { uidFor(it.channel.index) == roomId }?.channel
+            ?: rooms.values.firstOrNull { callsign(it.channel, it.name) == room }?.channel
 
-    private fun nameFor(channelIndex: Int): String? = rooms.entries.firstOrNull { it.value.index == channelIndex }?.key
+    private fun nameFor(channelIndex: Int): String? = rooms[channelIndex]?.name
 
     private fun uidFor(channelIndex: Int) = "MESHCORE-CH-$channelIndex"
 
@@ -345,7 +372,7 @@ class MeshPicture(private val appName: String) {
     fun markers(nowSeconds: Long = System.currentTimeMillis() / 1000): List<MarkerSpec> {
         if (self == null) return emptyList()
         val list = ArrayList<MarkerSpec>()
-        for ((name, channel) in rooms) {
+        for ((channel, name) in rooms.values) {
             // A contact has to have a point. A channel has no place, so it sits at 0, 0, off any map in use.
             list.add(
                 MarkerSpec(
@@ -436,14 +463,14 @@ class MeshPicture(private val appName: String) {
     /** A received channel message as a line from its channel's contact, or null when the channel is not known. */
     fun chatLine(message: ChannelMessage, atak: ClientIdentity): ChatSpec? {
         val name = nameFor(message.channelIndex) ?: return null
-        val id = "rx-${message.channelIndex}-${message.timestamp}-${Integer.toHexString(message.text.hashCode())}"
+        val id = "rx-${message.channelIndex}-${message.timestamp}-${digest(message.text)}"
         return line(message.channelIndex, name, atak, message.text, Instant.ofEpochSecond(message.timestamp), id)
     }
 
     /** A line from the bridge itself, such as a note that a message could not be sent. */
     fun notice(channelIndex: Int, atak: ClientIdentity, text: String, now: Instant): ChatSpec? {
         val name = nameFor(channelIndex) ?: return null
-        return line(channelIndex, name, atak, text, now, "note-${now.toEpochMilli()}")
+        return line(channelIndex, name, atak, text, now, noticeId(now))
     }
 
     /** A direct message to the ATAK user from the channel's contact. */
@@ -451,7 +478,7 @@ class MeshPicture(private val appName: String) {
         room = atak.callsign,
         roomId = atak.uid,
         senderUid = uidFor(channelIndex),
-        senderCallsign = rooms[name]?.let { callsign(it, name) } ?: name,
+        senderCallsign = rooms[channelIndex]?.let { callsign(it.channel, it.name) } ?: name,
         text = text,
         messageId = id,
         sentAt = sentAt,

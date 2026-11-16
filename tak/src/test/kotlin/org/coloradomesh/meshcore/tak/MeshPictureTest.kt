@@ -93,6 +93,17 @@ class MeshPictureTest {
     }
 
     @Test
+    fun aMadeUpChannelNameThatMatchesAnotherChannelLosesNoChannel() {
+        val picture = picture()
+        // Slots 0 and 1 share a name; slot 2 is already called what slot 0 would be called.
+        picture.setChannels(listOf(Channel(0, "Ops"), Channel(1, "Ops"), Channel(2, "Ops (0)")))
+        val channels = picture.markers(now).filter { it.uid.startsWith("MESHCORE-CH-") }
+        assertEquals(setOf("MESHCORE-CH-0", "MESHCORE-CH-1", "MESHCORE-CH-2"), channels.map { it.uid }.toSet())
+        assertEquals(3, channels.map { it.callsign }.toSet().size)
+        assertNotNull(picture.chatLine(ChannelMessage(0, "Ridge: still here", now), atak))
+    }
+
+    @Test
     fun aChatEventFindsItsChannelByContactUidOrCallsign() {
         val picture = picture()
         picture.setChannels(listOf(Channel(0, "Public", Channel.Kind.PUBLIC), Channel(1, "#denver", Channel.Kind.HASHTAG)))
@@ -178,6 +189,36 @@ class MeshPictureTest {
         val unknown = picture.directLine(DirectMessage("0123456789ab", "who?", now), atak)
         assertEquals("MESHCORE-0123456789ab", unknown.senderUid)
         assertEquals("01234567", unknown.senderCallsign)
+    }
+
+    @Test
+    fun differentTextsGetDifferentMessageIdsEvenWithTheSameHashCode() {
+        val picture = picture()
+        picture.setChannels(listOf(Channel(1, "#denver", Channel.Kind.HASHTAG)))
+        // "Aa" and "BB" have the same String.hashCode().
+        assertEquals("Aa".hashCode(), "BB".hashCode())
+        val a = picture.directLine(DirectMessage("a".repeat(12), "Aa", now), atak)
+        val b = picture.directLine(DirectMessage("a".repeat(12), "BB", now), atak)
+        assertFalse(a.messageId == b.messageId)
+        val ca = picture.chatLine(ChannelMessage(1, "Aa", now), atak)!!
+        val cb = picture.chatLine(ChannelMessage(1, "BB", now), atak)!!
+        assertFalse(ca.messageId == cb.messageId)
+        // A retry of the same message keeps its id.
+        assertEquals(a.messageId, picture.directLine(DirectMessage("a".repeat(12), "Aa", now), atak).messageId)
+    }
+
+    @Test
+    fun noticesAtTheSameMomentGetDifferentMessageIds() {
+        val picture = picture()
+        picture.setChannels(listOf(Channel(1, "#denver", Channel.Kind.HASHTAG)))
+        val ridge = contact('a')
+        val at = Instant.ofEpochSecond(now)
+        val first = picture.directNotice(ridge, atak, "Not delivered", at)
+        val second = picture.directNotice(ridge, atak, "Radio disconnected", at)
+        assertFalse(first.messageId == second.messageId)
+        val third = picture.notice(1, atak, "Too long", at)!!
+        val fourth = picture.notice(1, atak, "Not sent", at)!!
+        assertFalse(third.messageId == fourth.messageId)
     }
 
     @Test

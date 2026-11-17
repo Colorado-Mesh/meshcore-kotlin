@@ -23,3 +23,4 @@ rootProject.name = "meshcore-kotlin"
 
 include(":protocol")
 include(":ble")
+include(":tak")

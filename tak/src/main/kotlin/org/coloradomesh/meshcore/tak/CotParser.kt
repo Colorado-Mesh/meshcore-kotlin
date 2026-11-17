@@ -40,26 +40,51 @@ object CotParser {
     /** Longest opening tag read; a real CoT tag is a few hundred characters. */
     private const val MAX_TAG_LENGTH = 4096
     private const val NO_QUOTE = '\u0000'
+    private const val COMMENT_OPEN = "<!--"
+    private const val COMMENT_CLOSE = "-->"
+    private const val CDATA_OPEN = "<![CDATA["
+    private const val CDATA_CLOSE = "]]>"
 
     /**
      * Where the first opening tag named [name] sits in [xml], from its `<` to its closing `>`.
      * The tag ends at the first `>` that is not inside a quoted attribute value, since XML allows
-     * `>` in one (`chatroom="Ops > east"`). A plain scan, not a regex, so a long tag costs no stack.
-     * Null when there is no such tag, or it is unterminated or longer than [MAX_TAG_LENGTH].
+     * `>` in one (`chatroom="Ops > east"`). Comments and CDATA sections are text, not markup, so
+     * a tag written inside one is passed over. A plain scan, not a regex, so a long tag costs no
+     * stack. Null when there is no such tag, or it is unterminated or longer than [MAX_TAG_LENGTH].
      */
-    private fun openTagRange(xml: String, name: String): IntRange? {
+    private fun openTagRange(xml: String, name: String, from: Int = 0): IntRange? {
         val prefix = "<$name"
-        var from = 0
+        var i = from
         while (true) {
-            val start = xml.indexOf(prefix, from)
+            val start = xml.indexOf('<', i)
             if (start < 0) return null
+            val skipTo = skipTextSection(xml, start)
+            if (skipTo != start) {
+                if (skipTo < 0) return null
+                i = skipTo
+                continue
+            }
             val next = xml.getOrNull(start + prefix.length)
-            if (next != null && (next.isWhitespace() || next == '/' || next == '>')) {
+            if (xml.startsWith(prefix, start) && next != null && (next.isWhitespace() || next == '/' || next == '>')) {
                 val end = tagEnd(xml, start + prefix.length, start + MAX_TAG_LENGTH)
                 return if (end < 0) null else start..end
             }
-            from = start + 1
+            i = start + 1
         }
+    }
+
+    /**
+     * When a comment or CDATA section starts at [at], the index just past its end, or -1 when it
+     * never ends; otherwise [at] itself.
+     */
+    private fun skipTextSection(xml: String, at: Int): Int {
+        val close = when {
+            xml.startsWith(COMMENT_OPEN, at) -> COMMENT_CLOSE
+            xml.startsWith(CDATA_OPEN, at) -> CDATA_CLOSE
+            else -> return at
+        }
+        val end = xml.indexOf(close, at + 4)
+        return if (end < 0) -1 else end + close.length
     }
 
     /** Index of the `>` closing a tag, scanning [xml] from [from] up to [limit], or -1. */
@@ -127,9 +152,41 @@ object CotParser {
     private fun remarksText(xml: String): String? {
         val open = openTagRange(xml, "remarks") ?: return null
         if (xml[open.last - 1] == '/') return null
-        val bodyStart = open.last + 1
-        val end = xml.indexOf("</remarks>", bodyStart)
-        return if (end < 0) null else unescapeXml(xml.substring(bodyStart, end))
+        return textContent(xml, open.last + 1, "</remarks>")
+    }
+
+    /**
+     * The text of an element whose content starts at [from] and ends at [closeTag]: character
+     * data with its references decoded, CDATA sections taken literally, comments left out. Null
+     * when the element never closes.
+     */
+    private fun textContent(xml: String, from: Int, closeTag: String): String? {
+        val out = StringBuilder()
+        var i = from
+        while (true) {
+            val lt = xml.indexOf('<', i)
+            if (lt < 0) return null
+            out.append(unescapeXml(xml.substring(i, lt)))
+            when {
+                xml.startsWith(closeTag, lt) -> return out.toString()
+                xml.startsWith(CDATA_OPEN, lt) -> {
+                    val end = xml.indexOf(CDATA_CLOSE, lt + CDATA_OPEN.length)
+                    if (end < 0) return null
+                    out.append(xml, lt + CDATA_OPEN.length, end)
+                    i = end + CDATA_CLOSE.length
+                }
+                xml.startsWith(COMMENT_OPEN, lt) -> {
+                    val end = xml.indexOf(COMMENT_CLOSE, lt + COMMENT_OPEN.length)
+                    if (end < 0) return null
+                    i = end + COMMENT_CLOSE.length
+                }
+                else -> {
+                    // Remarks hold text only; any other markup is kept as written, as before.
+                    out.append('<')
+                    i = lt + 1
+                }
+            }
+        }
     }
 
     /**

@@ -90,4 +90,21 @@ class CotFramerTest {
         assertThrows(CotFrameTooLargeException::class.java) { framer.push(bytes("y")) }
         assertEquals(listOf(event("D")), framer.push(bytes(event("D"))))
     }
+
+    @Test
+    fun eventTagsInsideCdataOrACommentAreText() {
+        val framer = CotFramer()
+        val closeInside = event("A", "<detail><remarks><![CDATA[text </event> text]]></remarks></detail>")
+        val openInside = event("B", "<detail><remarks><![CDATA[example <event uid=\"X\">]]></remarks></detail>")
+        val commented = event("C", "<!-- </event> <event uid=\"Y\"> -->")
+        assertEquals(listOf(closeInside, openInside, commented), framer.push(bytes(closeInside + openInside + commented)))
+    }
+
+    @Test
+    fun aCdataSectionSplitAcrossReadsIsStillText() {
+        val framer = CotFramer()
+        val whole = event("A", "<remarks><![CDATA[a </event> b]]></remarks>")
+        val frames = whole.chunked(3).flatMap { framer.push(bytes(it)) }
+        assertEquals(listOf(whole), frames)
+    }
 }

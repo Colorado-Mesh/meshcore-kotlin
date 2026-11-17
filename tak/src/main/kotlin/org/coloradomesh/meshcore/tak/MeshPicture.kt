@@ -151,7 +151,7 @@ class MeshPicture(private val appName: String) {
 
     /**
      * A received MECP message, from [sender], heard [where] ("on #emergency"). Returns where its
-     * marker is, or null when it has no position to show.
+     * marker is, or null when it has no position to show or the marker limit left it off.
      *
      * An active beacon (B01) has one marker per sender, which moves as the beacon repeats. Any
      * other message, a beacon acknowledgement (B02) included, since that comes from whoever
@@ -166,7 +166,8 @@ class MeshPicture(private val appName: String) {
         dropExpiredMecp(nowSeconds)
         mecpMarks[uid] = MecpMark(uid, sender, where, message, lat, lon, nowSeconds)
         while (mecpMarks.size > MAX_MECP_MARKS) evictOne()
-        MecpPlace(uid, sender, lat, lon)
+        // The limit can drop the new marker itself, when every other one is more serious.
+        if (uid in mecpMarks) MecpPlace(uid, sender, lat, lon) else null
     }
 
     /**

@@ -298,4 +298,14 @@ class MeshPictureTest {
         val marker = picture.markers(now).single { it.uid == picture.markerUid(runner) }
         assertEquals(39.9, marker.latitude, 1e-9)
     }
+
+    @Test
+    fun aMarkerTheLimitDropsAtOnceIsNotReported() {
+        val picture = picture()
+        val mayday = Mecp.parse("MECP/0/M01 48.6520,20.1305")!!
+        for (i in 1..50) assertNotNull(picture.putMecp("Sender $i", "on #emergency", mayday, now))
+        val routine = Mecp.parse("MECP/3/M01 48.6520,20.1305")!!
+        assertNull(picture.putMecp("Ridge", "on #emergency", routine, now))
+        assertEquals(50, picture.markers(now).size)
+    }
 }

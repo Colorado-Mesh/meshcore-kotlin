@@ -186,4 +186,18 @@ class CotParserTest {
         val chat = CotParser.parseGeoChat(geochat(chat = "chatroom=\"Ops > east\" id=\"Ops > east\" senderCallsign=\"VIPER\""))
         assertEquals("Ops > east", chat?.room)
     }
+
+    @Test
+    fun aCommentedOutChatTagIsIgnored() {
+        val xml = geochat().replace("<__chat ", "<!-- <__chat chatroom=\"Fake\" id=\"Fake\"> --><__chat ")
+        assertEquals("Mesh Ops", CotParser.parseGeoChat(xml)?.room)
+    }
+
+    @Test
+    fun cdataInRemarksIsTakenLiterally() {
+        assertEquals("on scene", CotParser.parseGeoChat(geochat(remarks = "<![CDATA[on scene]]>"))?.text)
+        assertEquals("a &amp; b", CotParser.parseGeoChat(geochat(remarks = "<![CDATA[a &amp; b]]>"))?.text)
+        assertEquals("x & <y> z", CotParser.parseGeoChat(geochat(remarks = "x &amp; <![CDATA[<y>]]><!-- note --> z"))?.text)
+        assertEquals("a </remarks> b", CotParser.parseGeoChat(geochat(remarks = "a <![CDATA[</remarks>]]> b"))?.text)
+    }
 }

@@ -103,7 +103,20 @@ object Mecp {
     private val PEOPLE = token("""0*([1-9][0-9]*) ?[Pp][Aa][Xx]""")
     private val GPS = token("""([+-]?[0-9]+\.[0-9]+), ?([+-]?[0-9]+\.[0-9]+)""")
     private val TIME = token("""@([01]?[0-9]|2[0-3]):?([0-5][0-9])""")
-    private val LANGUAGE = token("""@([A-Za-z]{2,3}(?:[-_][A-Za-z0-9]{2,8})*)""")
+    /**
+     * The language hint, `@([A-Za-z]{2,3}(?:[-_][A-Za-z0-9]{2,8})*)` in §6.1, matched as one run of
+     * letters, digits, `-` and `_` and then checked subtag by subtag ([isLanguageTag]). The two take
+     * the same tokens, since nothing in the run is a boundary; MECP's form, as a JDK regex, repeats
+     * a group one stack frame per subtag, and a tag of a few thousand subtags overflows the stack.
+     */
+    private val LANGUAGE = token("""@([A-Za-z]{2,3}[-_A-Za-z0-9]*)""")
+    private val PRIMARY_SUBTAG = Regex("""[A-Za-z]{2,3}""")
+    private val LATER_SUBTAG = Regex("""[A-Za-z0-9]{2,8}""")
+
+    private fun isLanguageTag(tag: String): Boolean {
+        val subtags = tag.split('-', '_')
+        return PRIMARY_SUBTAG.matches(subtags[0]) && subtags.drop(1).all { LATER_SUBTAG.matches(it) }
+    }
     private val CALLSIGN = token("""~([A-Za-z0-9/]+)""")
     private val REFERENCE = token("""#([A-Za-z0-9_-]+)""")
 
@@ -162,7 +175,7 @@ object Mecp {
         }
 
         val time = take(TIME)?.let { m -> m.groupValues[1].padStart(2, '0') + m.groupValues[2] }
-        val language = take(LANGUAGE)?.groupValues?.get(1)?.lowercase()?.replace('_', '-')
+        val language = take(LANGUAGE) { m -> isLanguageTag(m.groupValues[1]) }?.groupValues?.get(1)?.lowercase()?.replace('_', '-')
         val callsign = take(CALLSIGN) { m -> m.groupValues[1].length <= MAX_CALLSIGN }?.groupValues?.get(1)?.uppercase()
         val reference = take(REFERENCE)?.groupValues?.get(1)
 

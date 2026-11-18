@@ -227,6 +227,26 @@ class MecpTest {
     }
 
     @Test
+    fun languageTagsAreCheckedSubtagBySubtag() {
+        assertEquals("zh-hans-cn", Mecp.parse("MECP/3/L04 @zh-Hans-CN")!!.language)
+        assertEquals("sr-latn-rs", Mecp.parse("MECP/3/L04 @sr_Latn_RS")!!.language)
+        assertNull(Mecp.parse("MECP/3/L04 @abcd")!!.language)
+        assertNull(Mecp.parse("MECP/3/L04 @de-x")!!.language)
+        assertNull(Mecp.parse("MECP/3/L04 @de--fr")!!.language)
+        assertNull(Mecp.parse("MECP/3/L04 @de-")!!.language)
+        assertNull(Mecp.parse("MECP/3/L04 @en-abcdefghi")!!.language)
+        assertEquals("en", Mecp.parse("MECP/3/L04 @de-x @en")!!.language)
+    }
+
+    @Test
+    fun aVeryLongLanguageTagDoesNotThrow() {
+        // About 60 KB: MECP's own pattern, as a JDK regex, overflowed the stack near 9 KB.
+        val tag = "@en" + "-ab".repeat(20_000)
+        assertEquals(tag.drop(1), Mecp.parse("MECP/3/L04 $tag")!!.language)
+        assertNull(Mecp.parse("MECP/3/L04 ${tag}-x")!!.language)
+    }
+
+    @Test
     fun theNewMedicalSupplyDropCode() {
         assertEquals("🚨 URGENT: Medical supply drop needed · At GPS coordinates · 39.7392, -104.9903",
             describe("MECP/1/M16 P05 39.7392,-104.9903"))

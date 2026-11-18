@@ -6,7 +6,7 @@ import org.junit.Test
 
 /**
  * MECP's conformance cases for its free-text conventions, from `freetext/tests.json` in
- * github.com/mecp-org/MECP at tag v1.2.1 (CC0), one row per case, in the same order. Each case gives
+ * github.com/mecp-org/MECP at tag v1.4.0 (CC0), one row per case, in the same order. Each case gives
  * a message and what a conforming decoder takes from it for one convention; null means nothing.
  */
 class MecpConformanceTest {
@@ -20,13 +20,24 @@ class MecpConformanceTest {
         Case("timestamp", "MECP/2/T05 meet@1430", null),
         Case("reference", "MECP/2/C08 #base-camp,", "base-camp"),
         Case("reference", "MECP/2/C08 (#tag)", "tag"),
+        Case("reference", "MECP/2/C08 #hut\u3000ok", "hut"),
+        Case("reference", "MECP/2/C08 #hut\u060Cok", "hut"),
+        Case("reference", "MECP/2/C08 #hut\u201Dok", "hut"),
+        Case("reference", "MECP/2/C08 #hut\u3001ok", "hut"),
+        Case("reference", "MECP/2/C08 #hut\uFF0Cok", "hut"),
+        Case("reference", "MECP/2/C08 #hut2/basecamp", null),
+        Case("reference", "MECP/3/L06 see https://example.org/#notes", null),
         Case("pax", "MECP/1/S01 3paxmore", null),
+        Case("pax", "MECP/1/S01 3pax*", null),
+        Case("timestamp", "MECP/3/L06 eta=@1430", null),
         Case("pax", "MECP/1/S01 0pax 2pax", 2),
         Case("pax", "MECP/1/S01 04pax", 4),
         Case("gps", "MECP/3/L06 95.0,200.0 47.3,8.5", "47.3,8.5"),
         Case("gps", "MECP/3/L02 2,5 km", null),
         Case("callsign", "MECP/3/L20 ~DL/OK1ABC", "DL/OK1ABC"),
         Case("callsign", "MECP/3/L20 ~ABCDEFGHIJKLM ~OK1ABC", "OK1ABC"),
+        Case("callsign", "MECP/3/L20 ~W1AW-9", null),
+        Case("message", "MECP/3/L20 ~W1AW-9", "valid" to true),
         Case("language", "MECP/3/L04 @zh_CN", "zh-cn"),
         Case("duration", "MECP/2/R03 45min", 45),
         Case("duration", "MECP/2/R03 2d", 2880),
@@ -37,9 +48,26 @@ class MecpConformanceTest {
         Case("duration", "MECP/2/C01 R03 P05 47.3769,12.1048 45min", 45),
         Case("duration", "MECP/3/L06 45min", null),
         Case("duration", "MECP/2/C01 R03 1pax 45", null),
+        Case("duration", "MECP/2/R03 30s", null),
+        Case("duration", "MECP/2/R03 30s 45min", 45),
+        Case("duration", "MECP/2/R03 47.3769,12.1048", null),
+        Case("duration", "MECP/2/R03 45.", 45),
+        Case("duration", "MECP/2/R03 45 0h", 45),
+        Case("duration", "MECP/2/R03 45 2h", 120),
+        Case("duration", "MECP/2/R03 2d 45min", 2880),
+        Case("duration", "MECP/2/R03 45min 2h", 45),
+        Case("duration", "MECP/2/R03 1h 30min", 90),
+        Case("duration", "MECP/2/R03 2 h", 120),
         Case("message", "MECP/1/T05 ", "valid" to false),
         Case("message", "MECP/1/t05 x", "valid" to false),
         Case("message", "MECP/1/T05 T05 damaged", "valid" to true),
+        Case("message", "MECP/1/T05 T05 damaged\n", "valid" to true),
+        Case("message", "MECP/1/T05 T05 damaged\r\n", "valid" to true),
+        Case("message", "MECP/1/T05 T05 damaged\r", "valid" to true),
+        Case("message", "MECP/1/T05 foo\nbar", "valid" to false),
+        Case("message", "MECP/1/T05 foo\u2028bar", "valid" to false),
+        Case("message", "MECP/1/T05 foo\u000Cbar", "valid" to false),
+        Case("message", "MECP/0/M01 " + "A".repeat(191), "valid" to true),
     )
 
     /** What [Mecp.parse] took from [input] for [convention], in the form the cases use. */
@@ -48,7 +76,7 @@ class MecpConformanceTest {
         if (convention == "message") return "valid" to (m != null)
         m ?: return "not parsed"
         return when (convention) {
-            "timestamp" -> m.timeUtc?.let { "${it.substring(0, 2)}:${it.substring(2)}" }
+            "timestamp" -> m.time?.let { "${it.substring(0, 2)}:${it.substring(2)}" }
             "reference" -> m.reference
             "pax" -> m.people
             "gps" -> if (m.hasPosition) "${m.latitude},${m.longitude}" else null
@@ -70,6 +98,6 @@ class MecpConformanceTest {
 
     @Test
     fun allOfThemAreHere() {
-        assertEquals(27, cases.size)
+        assertEquals(55, cases.size)
     }
 }

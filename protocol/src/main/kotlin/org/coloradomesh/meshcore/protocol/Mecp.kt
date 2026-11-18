@@ -8,7 +8,7 @@ import java.util.Locale
  * `MECP/<severity>/<codes> [free text]`, for example `MECP/0/M01 M07 2pax P05 48.6520,20.1305`:
  * MAYDAY, injury, fracture, 2 people, at those coordinates.
  *
- * [parse] follows MECP 1.2.1 (github.com/mecp-org/MECP, `MECP_Comprehensive_Brief.md` §6.1): the
+ * [parse] follows MECP 1.4.0 (github.com/mecp-org/MECP, `MECP_Comprehensive_Brief.md` §6.1): the
  * message pattern, then each free-text convention by its decoding pattern, searched between
  * boundaries, with the first match that passes the convention's validation used and a failed one
  * left in the free text. It passes the protocol's conformance cases (`freetext/tests.json`).
@@ -35,15 +35,19 @@ object Mecp {
         val longitude: Double?,
         /**
          * The ETA in minutes, from a duration in the free text when `R03` (ETA) is among the codes:
-         * `45min`, `2h`, `1h30min`, `2d`, `90s`, `ETA 45min`, or a bare number as the first word.
+         * `45min`, `2h`, `1h30min`, `2d`, `ETA 45min`, or a bare whole number as the first word.
+         * The first by position wins, and a bare number counts only when no value with a unit does.
          */
         val etaMinutes: Int?,
         /** An incident tag, from `#tag`, as written. */
         val reference: String?,
         /** The sender's language tag, from `@xx`, in lowercase with `-` (`zh-cn`). */
         val language: String?,
-        /** When it was written, as `HHMM` UTC, from `@HHMM`, `@H:MM` and the like. */
-        val timeUtc: String?,
+        /**
+         * When it was written, as `HHMM`, from `@HHMM`, `@H:MM` and the like: the sender's local
+         * time (MECP 1.4.0). The message carries no zone, so it is shown as sent, never converted.
+         */
+        val time: String?,
         /** The sender's callsign, from `~CALL`, in capitals. */
         val callsign: String?,
         /** The message as it arrived, from `MECP/` on, without a final line ending. */
@@ -66,16 +70,20 @@ object Mecp {
     data class Received(val sender: String?, val message: Message)
 
     /** §6.1: one line, a severity, one or more codes, and optional free text with no space at either end. */
-    private val MESSAGE = Regex("""MECP/([0-3])/([A-Z][0-9]{2}(?: [A-Z][0-9]{2})*)(?: ([^ \t\n\f\r](?:.*[^ \t\n\f\r])?))?""")
+    private val MESSAGE = Regex(
+        """MECP/([0-3])/([A-Z][0-9]{2}(?: [A-Z][0-9]{2})*)""" +
+            """(?: ([^ \t\n\f\r\u0085\u2028\u2029](?:[^\n\f\r\u0085\u2028\u2029]*[^ \t\n\f\r\u0085\u2028\u2029])?))?""",
+    )
     private val CODE = Regex("""[A-Z][0-9]{2}""")
 
     /**
-     * Boundary `B`, §6.1 rule 4: ASCII whitespace or ASCII punctuation, except the sigils `@ # ~ +`
-     * and `- _`, plus the listed Unicode spaces and punctuation.
+     * Boundary `B`, §6.1 rule 4 as MECP 1.4.0 lists it: tab, line feed, form feed, carriage return,
+     * space, `, . ; : ! ? ' " ( ) [ ] { }`, and the listed Unicode spaces and punctuation. Nothing
+     * else is a boundary, so `/`, `*` or `=` next to a detail stop it being read (`#hut2/basecamp`).
      */
     private val BOUNDARY_CHARS: Set<Char> = buildSet {
-        addAll(listOf('\t', '\n', '\u000B', '\u000C', '\r', ' '))
-        addAll("!\"$%&'()*,./:;<=>?[\\]^`{|}".toList())
+        addAll(listOf('\t', '\n', '\u000C', '\r', ' '))
+        addAll(",.;:!?'\"()[]{}".toList())
         addAll(listOf('\u00A0', '\u1680', '\u202F', '\u205F', '\u3000', '\u060C', '\u061B', '\u061F', '\u06D4'))
         addAll(listOf('\u00AB', '\u00BB', '\u2013', '\u2014', '\u2026', '\u3001', '\u3002', '\u3010', '\u3011'))
         addAll(listOf('\uFF01', '\uFF08', '\uFF09', '\uFF0C', '\uFF0E', '\uFF1A', '\uFF1B', '\uFF1F'))
@@ -99,7 +107,10 @@ object Mecp {
     private val CALLSIGN = token("""~([A-Za-z0-9/]+)""")
     private val REFERENCE = token("""#([A-Za-z0-9_-]+)""")
 
-    /** The duration patterns, scoped to `R03`, in the order §6.1 tries them, each with its conversion to minutes. */
+    /**
+     * The duration patterns with a unit, scoped to `R03`, each with its conversion to minutes. The
+     * first match by position wins; at the same position, the earlier pattern here (§6.1).
+     */
     private val DURATIONS: List<Pair<Regex, (MatchResult) -> Long?>> = listOf(
         token("""(?:[Ee][Tt][Aa] ?)?([0-9]+) ?[Hh] ?([0-9]+) ?[Mm][Ii][Nn]""") to { m ->
             sum(times(number(m, 1), 60), number(m, 2))
@@ -107,15 +118,19 @@ object Mecp {
         token("""(?:[Ee][Tt][Aa] ?)?([0-9]+) ?[Hh]""") to { m -> times(number(m, 1), 60) },
         token("""(?:[Ee][Tt][Aa] ?)?([0-9]+) ?[Mm][Ii][Nn]""") to { m -> number(m, 1) },
         token("""(?:[Ee][Tt][Aa] ?)?([0-9]+) ?[Dd]""") to { m -> times(number(m, 1), 1440) },
-        token("""(?:[Ee][Tt][Aa] ?)?([0-9]+) ?[Ss]""") to { m -> sum(number(m, 1), 59)?.let { it / 60 } },
-        // A bare number is read only as the first word of the free text.
-        token("""^(?:[Ee][Tt][Aa] ?)?([0-9]+)""") to { m -> number(m, 1) },
     )
+
+    /**
+     * A bare number of minutes, read only as the first word of the free text and only when no
+     * duration with a unit is found. One with a decimal part (`47.3769`) is not a duration.
+     */
+    private val BARE_DURATION = token("""^(?:[Ee][Tt][Aa] ?)?([0-9]+)([.,][0-9]+)?""")
 
     /**
      * Decodes [text] when it is an MECP message, or returns null. The prefix and codes are
      * case-sensitive, a message needs a severity from 0 to 3 and at least one code, and it must be a
-     * single line of at most 200 bytes: one final line ending is allowed and dropped.
+     * single line: one final line ending is allowed and dropped. A message over MECP's 200 bytes is
+     * still read, as MECP 1.4.0 asks of receivers.
      */
     fun parse(text: String): Message? {
         val line = when {
@@ -123,8 +138,7 @@ object Mecp {
             text.endsWith('\n') || text.endsWith('\r') -> text.dropLast(1)
             else -> text
         }
-        if (line.any { it == '\r' || it == '\n' || it == '\u0085' || it == '\u2028' || it == '\u2029' }) return null
-        if (line.toByteArray(Charsets.UTF_8).size > MAX_BYTES) return null
+        if (line.any { it in LINE_BREAKS }) return null
         val match = MESSAGE.matchEntire(line) ?: return null
         val severity = match.groupValues[1].toInt()
         val codes = match.groupValues[2].split(' ')
@@ -154,9 +168,16 @@ object Mecp {
 
         var eta: Int? = null
         if ("R03" in codes) {
-            for ((pattern, minutes) in DURATIONS) {
-                val taken = take(pattern) { found -> minutes(found)?.takeIf { it in 1..Int.MAX_VALUE.toLong() }?.also { eta = it.toInt() } != null }
-                if (taken != null) break
+            fun valid(minutes: Long?): Int? = minutes?.takeIf { it in 1..Int.MAX_VALUE.toLong() }?.toInt()
+            // The first valid match of each pattern; the earliest of those, the earlier pattern on a tie.
+            val found = DURATIONS.mapNotNull { (pattern, minutes) ->
+                firstValid(pattern, search) { valid(minutes(it)) != null }?.let { it to minutes }
+            }.minByOrNull { (match, _) -> match.range.first }
+            if (found != null) {
+                eta = valid(found.second(found.first))
+                used.add(found.first.range)
+            } else {
+                take(BARE_DURATION) { m -> m.groups[2] == null && valid(number(m, 1))?.also { eta = it } != null }
             }
         }
 
@@ -172,7 +193,7 @@ object Mecp {
             etaMinutes = eta,
             reference = reference,
             language = language,
-            timeUtc = time,
+            time = time,
             callsign = callsign,
             raw = line,
             remainder = remainder(search, used, laterCodes),
@@ -196,12 +217,12 @@ object Mecp {
         return if (message.isDrill) "DRILL $label" else label
     }
 
-    /** What each code means, in order, with `[N]` and `[minutes]` filled in when the message gives them. */
+    /** What each code means, in order, with `[N]` and `[time]` filled in when the message gives them. */
     fun codeMeanings(message: Message): List<String> = (message.codes + message.laterCodes).map { code ->
         val meaning = MecpCodes.CODES[code] ?: return@map "unknown code $code"
         var text = meaning
         message.people?.let { text = text.replace("[N]pax", "$it people") }
-        message.etaMinutes?.let { text = text.replace("[minutes]", duration(it)) }
+        message.etaMinutes?.let { text = text.replace("[time]", duration(it)) }
         text
     }
 
@@ -216,7 +237,8 @@ object Mecp {
         val filled = parts.joinToString(" ")
         message.people?.let { if ("$it people" !in filled) parts.add("$it people") }
         if (message.latitude != null && message.longitude != null) parts.add(coordinates(message.latitude, message.longitude))
-        message.timeUtc?.let { parts.add("${it.substring(0, 2)}:${it.substring(2)} UTC") }
+        // The sender's local time, with no zone on the wire, so it is shown as sent.
+        message.time?.let { parts.add("${it.substring(0, 2)}:${it.substring(2)} sender's time") }
         message.etaMinutes?.let { duration(it).let { eta -> if (eta !in filled) parts.add("ETA $eta") } }
         message.reference?.let { parts.add("incident #$it") }
         message.callsign?.let { parts.add("callsign $it") }
@@ -295,11 +317,8 @@ object Mecp {
 
     private fun sum(a: Long?, b: Long?): Long? = if (a == null || b == null) null else runCatching { Math.addExact(a, b) }.getOrNull()
 
-    /**
-     * §6.1: a message is at most 200 bytes of UTF-8, counted without the final line ending.
-     * MeshCore text is shorter than this, so it matters only for text from elsewhere.
-     */
-    private const val MAX_BYTES = 200
+    /** §6.1: characters a message must not contain, once one final line ending is dropped. */
+    private val LINE_BREAKS = setOf('\r', '\n', '\u000C', '\u0085', '\u2028', '\u2029')
 
     /** §6.1: a callsign is at most 12 characters. */
     private const val MAX_CALLSIGN = 12

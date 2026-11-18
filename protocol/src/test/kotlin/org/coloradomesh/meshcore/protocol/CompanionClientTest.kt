@@ -905,9 +905,91 @@ class CompanionClientTest {
         client.onFrame(channelInfo(0, "Public"))
         assertEquals(1, readies)
         client.onFrame(byteArrayOf(0x0A))
+        assertArrayEquals(byteArrayOf(0x14), lastSent())
+        client.onFrame(battery(3_900))
+        // A later collection, run to its end, doesn't announce readiness again.
         client.onFrame(byteArrayOf(0x83.toByte()))
+        assertArrayEquals(byteArrayOf(0x0A), lastSent())
         client.onFrame(byteArrayOf(0x0A))
         assertEquals(1, readies)
+        // Nor does a second start-up on the same connection.
+        client.start()
+        client.onFrame(selfInfo())
+        client.onFrame(deviceInfo(slots = 1))
+        client.onFrame(byteArrayOf(2) + le32(0))
+        client.onFrame(byteArrayOf(4) + le32(1_700_000_500))
+        client.onFrame(channelInfo(0, "Public"))
+        assertEquals(1, readies)
+        // A new connection does.
+        client.onLinkClosed()
+        client.start()
+        client.onFrame(selfInfo())
+        client.onFrame(deviceInfo(slots = 1))
+        client.onFrame(byteArrayOf(2) + le32(0))
+        client.onFrame(byteArrayOf(4) + le32(1_700_000_500))
+        client.onFrame(channelInfo(0, "Public"))
+        assertEquals(2, readies)
+    }
+
+    @Test
+    fun aLinkClosedDuringTheLastChannelReplyIsNotMadeReady() {
+        var readies = 0
+        lateinit var client: CompanionClient
+        client = CompanionClient(
+            transmit = { sent.add(it) },
+            listener = object : CompanionClient.Listener {
+                override fun onChannels(channels: List<Channel>) { client.onLinkClosed() }
+                override fun onReady() { readies++ }
+                override fun onSendResult(channelIndex: Int, text: String, accepted: Boolean) { results.add(text to accepted) }
+            },
+            clock = { now },
+        )
+        client.start()
+        client.onFrame(selfInfo())
+        client.onFrame(deviceInfo(slots = 1))
+        client.onFrame(byteArrayOf(2) + le32(0))
+        client.onFrame(byteArrayOf(4) + le32(1_700_000_500))
+        val before = sent.size
+        client.onFrame(channelInfo(0, "Public"))
+        assertEquals(0, readies)
+        assertEquals(before, sent.size)
+        client.sendChannelText(0, "hello")
+        assertEquals(listOf("hello" to false), results)
+    }
+
+    @Test
+    fun closingFromOnReadyLeavesNothingToSend() {
+        // A transport that answers at once, inside the send, as a loopback test link might.
+        lateinit var client: CompanionClient
+        var sentAtClose = -1
+        // The frames that answer each request in turn; the contact list takes two.
+        val replies = ArrayDeque<List<ByteArray>>()
+        client = CompanionClient(
+            transmit = { frame ->
+                sent.add(frame)
+                replies.removeFirstOrNull()?.forEach { client.onFrame(it) }
+            },
+            listener = object : CompanionClient.Listener {
+                override fun onReady() {
+                    client.onLinkClosed()
+                    sentAtClose = sent.size
+                }
+            },
+            clock = { now },
+        )
+        replies.addAll(
+            listOf(
+                listOf(selfInfo()),
+                listOf(deviceInfo(slots = 1)),
+                listOf(byteArrayOf(2) + le32(0), byteArrayOf(4) + le32(1_700_000_500)),
+                listOf(channelInfo(0, "Public")),
+            ),
+        )
+        client.start()
+        assertTrue(replies.isEmpty())
+        // Whatever went out while the link was open, nothing goes out after the close.
+        assertTrue(sentAtClose > 0)
+        assertEquals(sentAtClose, sent.size)
     }
 
     @Test

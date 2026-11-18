@@ -19,6 +19,8 @@ The code only reads from a radio, sends text, and asks tracked nodes for their p
 - **The radio's clock**, which an app can ask to have set from its own when it is off by more than a given number of seconds (`CompanionClient.StartUp.clockTolerance`, off by default).
 - **Saving a contact** (`CompanionClient.saveContact`, protocol command 9, decided 1 November 2026): adding a contact back to the radio's list, or updating one, typically to set its favourite flag. An app calls it only when its user has turned that on: WearMesh does so behind its "Keep contacts on radio" setting, off by default, to put back the people its user messages when a full radio drops them. MeshCore TAK Bridge never calls it. A save keeps the contact's route as the radio gave it, or sends none. An app also passes `savesAllowed` (to `CompanionClient` or `RadioSession`), asked just before each save is sent, so that turning the choice off drops saves already queued.
 
+An app that doesn't show messages can leave them on the radio (`CompanionClient.StartUp.collectMessages = false`). This skips a request rather than writing anything: the radio deletes a message once it's collected, so such an app leaves them for one that does. `Listener.onQueueEmpty` then never comes, so such an app uses `Listener.onReady` to know when start-up is through.
+
 ## Using it from an app
 
 Each app includes this repository as a git submodule at its root and builds it from source:

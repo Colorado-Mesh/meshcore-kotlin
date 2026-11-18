@@ -88,8 +88,18 @@ class CompanionClient(
      * With [clockTolerance] set, the radio's clock is read too, right after the device query, and
      * reported to [Listener.onRadioClock]; when it differs from this client's clock by more than
      * that many seconds, it is set to this client's. Off by default: the radio's clock is left alone.
+     *
+     * With [collectMessages] false, messages are left on the radio: they are not collected at
+     * start-up, nor when the radio says more are waiting. The radio deletes a message once it is
+     * collected, so an app that does not show messages should leave them for one that does.
+     * [Listener.onQueueEmpty] is then never called; [Listener.onReady] says when start-up is done.
      */
-    data class StartUp(val contactsSince: Long = 0, val readChannels: Boolean = true, val clockTolerance: Long? = null)
+    data class StartUp(
+        val contactsSince: Long = 0,
+        val readChannels: Boolean = true,
+        val clockTolerance: Long? = null,
+        val collectMessages: Boolean = true,
+    )
 
     interface Listener {
         fun onLog(message: String) {}
@@ -152,6 +162,15 @@ class CompanionClient(
          * disconnect here. Not called when the radio refuses or does not answer the request.
          */
         fun onQueueEmpty() {}
+
+        /**
+         * Start-up is through: from here sends are taken, held contact saves go out, and the
+         * radio's notices of new messages and adverts are acted on. With [StartUp.readChannels]
+         * true (the default) this comes after the contact list and the channels; with it false,
+         * as soon as the reads are queued. Messages waiting at start-up may still be being
+         * collected. Called once per connection, and not at all if start-up fails.
+         */
+        fun onReady() {}
 
         /**
          * Start-up cannot finish: the radio did not answer [what] (the opening greeting or the
@@ -293,6 +312,7 @@ class CompanionClient(
         // nothing of this connection's is left to go out on a later one.
         started = false
         ready = false
+        readyAnnounced = false
         val unanswered = ArrayList<Contact>(heldSaves)
         heldSaves.clear()
         (current as? Job.SaveContact)?.let { unanswered.add(it.contact) }
@@ -414,7 +434,7 @@ class CompanionClient(
     fun onFrame(bytes: ByteArray) {
         val frame = CompanionFrames.parse(bytes) ?: return
         when (frame) {
-            CompanionFrame.MessagesWaiting -> if (ready) enqueueOnce(Job.Sync)
+            CompanionFrame.MessagesWaiting -> if (ready && startUp.collectMessages) enqueueOnce(Job.Sync)
             CompanionFrame.AdvertHeard -> if (ready) enqueueOnce(Job.Contacts)
             is CompanionFrame.SendConfirmed -> confirm(frame)
             is CompanionFrame.TelemetryReply -> receiveTelemetry(frame.telemetry)
@@ -469,15 +489,19 @@ class CompanionClient(
             Job.DeviceQuery -> if (frame is CompanionFrame.Device) {
                 listener.onDevice(frame.info)
                 finish(job)
-                if (startUp.clockTolerance != null) enqueue(Job.GetTime)
-                enqueue(Job.Contacts)
+                // Queue the whole batch before sending any of it, so a reply that comes back
+                // during a send (and so start-up ending, and the app perhaps closing the link
+                // from onReady) finds the collection already queued, to be cleared with the rest.
+                if (startUp.clockTolerance != null) queue.add(Job.GetTime)
+                queue.add(Job.Contacts)
                 if (startUp.readChannels) {
                     slotsLeft = frame.info.maxChannels.takeIf { it > 0 } ?: LEGACY_CHANNEL_SLOTS
                     channels.clear()
                     unansweredSlots.clear()
-                    for (index in 0 until slotsLeft) enqueue(Job.GetChannel(index))
+                    for (index in 0 until slotsLeft) queue.add(Job.GetChannel(index))
                 }
-                enqueue(Job.Sync)
+                if (startUp.collectMessages) queue.add(Job.Sync)
+                pump()
                 // Without channel slots to read, start-up is done once these are queued.
                 if (!startUp.readChannels) becomeReady()
             }
@@ -637,11 +661,21 @@ class CompanionClient(
 
     /** Start-up is over: messages can be sent, and notices of new messages and adverts acted on. */
     private fun becomeReady() {
+        // The app may have closed the link from a callback just before this (onChannels, say).
+        if (!started) return
         ready = true
         requestBattery()
         for (contact in heldSaves) enqueue(Job.SaveContact(contact))
         heldSaves.clear()
+        // Once per connection, even if the app calls start() again without closing the link.
+        if (!readyAnnounced) {
+            readyAnnounced = true
+            listener.onReady()
+        }
     }
+
+    /** Whether [Listener.onReady] has been called on this connection. */
+    private var readyAnnounced = false
 
     private fun enqueue(job: Job) {
         queue.add(job)

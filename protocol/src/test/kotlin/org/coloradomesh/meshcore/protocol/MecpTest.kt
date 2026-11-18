@@ -6,7 +6,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** Examples from the MECP project's README and brief, read as MECP 1.2.1 says. */
+/** Examples from the MECP project's README and brief, read as MECP 1.4.0 says. */
 class MecpTest {
     private fun describe(text: String) = Mecp.describe(Mecp.parse(text)!!)
 
@@ -55,7 +55,7 @@ class MecpTest {
     fun aBeaconWithTimeCallsignAndReference() {
         assertEquals(
             "🆘 MAYDAY: Automated distress beacon active — sender may be unresponsive · Injury · At GPS coordinates · " +
-                "48.6500, 20.1300 · 14:30 UTC · incident #A1 · callsign W0RMT · in English",
+                "48.6500, 20.1300 · 14:30 sender's time · incident #A1 · callsign W0RMT · in English",
             describe("MECP/0/B01 M01 P05 48.65,20.13 @1430 #A1 ~W0RMT @en"),
         )
     }
@@ -98,6 +98,7 @@ class MecpTest {
         assertEquals("MECP/1/M01", Mecp.parse("MECP/1/M01\n")!!.raw)
         assertNull(Mecp.parse("MECP/1/M01 hurt\nsecond line"))
         assertNull(Mecp.parse("MECP/1/M01 hurt\u2028more"))
+        assertNull(Mecp.parse("MECP/1/M01 hurt\u000Cmore"))
         assertNull(Mecp.parse("MECP/1/M01\n\n"))
     }
 
@@ -105,7 +106,7 @@ class MecpTest {
     fun badDetailsAreNotTakenAsPositionsOrTimes() {
         val m = Mecp.parse("MECP/1/P05 95.0,20.0 @2599")!!
         assertNull(m.latitude)
-        assertNull(m.timeUtc)
+        assertNull(m.time)
         assertEquals("95.0,20.0 @2599", m.remainder)
     }
 
@@ -124,7 +125,6 @@ class MecpTest {
         assertEquals("ℹ️ ROUTINE: Help coming · ETA 1 h 30 min", describe("MECP/3/R02 R03 ETA 1h 30min"))
         assertEquals("ℹ️ ROUTINE: Help coming · ETA 2 h", describe("MECP/3/R02 R03 2h"))
         assertEquals("ℹ️ ROUTINE: Help coming · ETA 2 d", describe("MECP/3/R02 R03 2d"))
-        assertEquals(2, Mecp.parse("MECP/3/R03 90s")!!.etaMinutes)
         assertNull(Mecp.parse("MECP/3/R03 0min")!!.etaMinutes)
         assertNull(Mecp.parse("MECP/3/R03 99999999999999999999min")!!.etaMinutes)
     }
@@ -139,11 +139,43 @@ class MecpTest {
     }
 
     @Test
+    fun theFirstEtaByPositionWins() {
+        // MECP 1.4.0: position decides, not the order the patterns are tried in.
+        assertEquals(2880, Mecp.parse("MECP/2/R03 2d 45min")!!.etaMinutes)
+        assertEquals(45, Mecp.parse("MECP/2/R03 45min 2h")!!.etaMinutes)
+        assertEquals(90, Mecp.parse("MECP/2/R03 1h 30min")!!.etaMinutes)
+        // A bare number counts only when no duration with a unit does.
+        assertEquals(120, Mecp.parse("MECP/2/R03 45 2h")!!.etaMinutes)
+        assertEquals(45, Mecp.parse("MECP/2/R03 45 0h")!!.etaMinutes)
+    }
+
+    @Test
+    fun secondsAndDecimalsAreNotEtas() {
+        val seconds = Mecp.parse("MECP/2/R03 30s")!!
+        assertNull(seconds.etaMinutes)
+        assertEquals("30s", seconds.remainder)
+        val position = Mecp.parse("MECP/2/R03 47.3769,12.1048")!!
+        assertNull(position.etaMinutes)
+        assertTrue(position.hasPosition)
+        assertEquals(45, Mecp.parse("MECP/2/R03 45.")!!.etaMinutes)
+    }
+
+    @Test
+    fun theTimeIsTheSendersAndShownAsSent() {
+        assertEquals("ℹ️ ROUTINE: Running late · 18:45 sender's time", describe("MECP/3/L06 @1845"))
+    }
+
+    @Test
+    fun theEtaFillsTheCodeText() {
+        assertEquals(listOf("ETA 2 h"), Mecp.codeMeanings(Mecp.parse("MECP/2/R03 2h")!!))
+    }
+
+    @Test
     fun detailsInTheirLooserForms() {
         val m = Mecp.parse("MECP/0/M01 4 PAX +48.8566, 2.3522 @6:30 ~vk2/ok1abc/p @zh_CN #base_camp")!!
         assertEquals(4, m.people)
         assertEquals(48.8566, m.latitude!!, 1e-9)
-        assertEquals("0630", m.timeUtc)
+        assertEquals("0630", m.time)
         assertEquals("VK2/OK1ABC/P", m.callsign)
         assertEquals("zh-cn", m.language)
         assertEquals("base_camp", m.reference)
@@ -153,7 +185,7 @@ class MecpTest {
     @Test
     fun aDetailNeedsBoundariesAroundIt() {
         val m = Mecp.parse("MECP/3/L01 meet@1430 3paxmore #café")!!
-        assertNull(m.timeUtc)
+        assertNull(m.time)
         assertNull(m.people)
         assertNull(m.reference)
         assertEquals("meet@1430 3paxmore #café", m.remainder)
@@ -163,7 +195,7 @@ class MecpTest {
     fun punctuationAroundADetailIsNotLeftOver() {
         val m = Mecp.parse("MECP/2/C08 (#tag), @1430.")!!
         assertEquals("tag", m.reference)
-        assertEquals("1430", m.timeUtc)
+        assertEquals("1430", m.time)
         assertNull(m.remainder)
     }
 
@@ -175,14 +207,43 @@ class MecpTest {
     }
 
     @Test
-    fun aMessageIsAtMost200Bytes() {
-        // "MECP/3/L15 " is 11 bytes, and each 界 is 3, so 63 of them make exactly 200.
-        val atLimit = "MECP/3/L15 " + "界".repeat(63)
-        assertEquals(200, atLimit.toByteArray(Charsets.UTF_8).size)
-        assertTrue(Mecp.parse(atLimit) != null)
-        assertTrue(Mecp.parse(atLimit + "\r\n") != null)
-        assertNull(Mecp.parse(atLimit + "界"))
-        assertNull(Mecp.parse("MECP/3/L15 " + "x".repeat(190)))
+    fun onlyTheListedPunctuationSeparatesADetail() {
+        val m = Mecp.parse("MECP/3/L06 #hut2/basecamp 3pax* eta=@1430")!!
+        assertNull(m.reference)
+        assertNull(m.people)
+        assertNull(m.time)
+        assertEquals("#hut2/basecamp 3pax* eta=@1430", m.remainder)
+        assertEquals("hut", Mecp.parse("MECP/2/C08 #hut\u3001ok")!!.reference)
+    }
+
+    @Test
+    fun aMessageOver200BytesIsStillRead() {
+        // MECP 1.4.0: senders keep to 200 bytes, but a receiver must not refuse a longer message.
+        // "MECP/3/L15 " is 11 bytes, and each 界 is 3, so 64 of them make 203.
+        val over = "MECP/3/L15 " + "界".repeat(64)
+        assertEquals(203, over.toByteArray(Charsets.UTF_8).size)
+        assertEquals("界".repeat(64), Mecp.parse(over)!!.freeText)
+        assertEquals(over, Mecp.parse(over + "\r\n")!!.raw)
+    }
+
+    @Test
+    fun languageTagsAreCheckedSubtagBySubtag() {
+        assertEquals("zh-hans-cn", Mecp.parse("MECP/3/L04 @zh-Hans-CN")!!.language)
+        assertEquals("sr-latn-rs", Mecp.parse("MECP/3/L04 @sr_Latn_RS")!!.language)
+        assertNull(Mecp.parse("MECP/3/L04 @abcd")!!.language)
+        assertNull(Mecp.parse("MECP/3/L04 @de-x")!!.language)
+        assertNull(Mecp.parse("MECP/3/L04 @de--fr")!!.language)
+        assertNull(Mecp.parse("MECP/3/L04 @de-")!!.language)
+        assertNull(Mecp.parse("MECP/3/L04 @en-abcdefghi")!!.language)
+        assertEquals("en", Mecp.parse("MECP/3/L04 @de-x @en")!!.language)
+    }
+
+    @Test
+    fun aVeryLongLanguageTagDoesNotThrow() {
+        // About 60 KB: MECP's own pattern, as a JDK regex, overflowed the stack near 9 KB.
+        val tag = "@en" + "-ab".repeat(20_000)
+        assertEquals(tag.drop(1), Mecp.parse("MECP/3/L04 $tag")!!.language)
+        assertNull(Mecp.parse("MECP/3/L04 ${tag}-x")!!.language)
     }
 
     @Test

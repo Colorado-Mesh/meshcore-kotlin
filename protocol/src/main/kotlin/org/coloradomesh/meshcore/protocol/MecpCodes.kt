@@ -3,8 +3,8 @@ package org.coloradomesh.meshcore.protocol
 /**
  * The English MECP code table: what each code means, and the severity and category names.
  *
- * From the MECP project's `languages/en.json` (github.com/mecp-org/MECP, tag v1.2.1, protocol
- * version 1.2.1, 109 codes), by the MECP contributors, licensed CC BY 4.0
+ * From the MECP project's `languages/en.json` (github.com/mecp-org/MECP, tag v1.4.0, protocol
+ * version 1.4.0, 109 codes), by the MECP contributors, licensed CC BY 4.0
  * (creativecommons.org/licenses/by/4.0). Copied unchanged. The protocol itself is CC0.
  */
 internal object MecpCodes {
@@ -89,7 +89,7 @@ internal object MecpCodes {
         "C08" to "Rendezvous at",
         "R01" to "Acknowledged",
         "R02" to "Help coming",
-        "R03" to "ETA [minutes]",
+        "R03" to "ETA [time]",
         "R04" to "Cannot assist",
         "R05" to "Redirecting to",
         "R06" to "Stand by",

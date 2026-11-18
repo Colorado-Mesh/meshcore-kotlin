@@ -88,8 +88,18 @@ class CompanionClient(
      * With [clockTolerance] set, the radio's clock is read too, right after the device query, and
      * reported to [Listener.onRadioClock]; when it differs from this client's clock by more than
      * that many seconds, it is set to this client's. Off by default: the radio's clock is left alone.
+     *
+     * With [collectMessages] false, messages are left on the radio: they are not collected at
+     * start-up, nor when the radio says more are waiting. The radio deletes a message once it is
+     * collected, so an app that does not show messages should leave them for one that does.
+     * [Listener.onQueueEmpty] is then never called; [Listener.onReady] says when start-up is done.
      */
-    data class StartUp(val contactsSince: Long = 0, val readChannels: Boolean = true, val clockTolerance: Long? = null)
+    data class StartUp(
+        val contactsSince: Long = 0,
+        val readChannels: Boolean = true,
+        val clockTolerance: Long? = null,
+        val collectMessages: Boolean = true,
+    )
 
     interface Listener {
         fun onLog(message: String) {}
@@ -152,6 +162,15 @@ class CompanionClient(
          * disconnect here. Not called when the radio refuses or does not answer the request.
          */
         fun onQueueEmpty() {}
+
+        /**
+         * Start-up is through: from here sends are taken, held contact saves go out, and the
+         * radio's notices of new messages and adverts are acted on. With [StartUp.readChannels]
+         * true (the default) this comes after the contact list and the channels; with it false,
+         * as soon as the reads are queued. Messages waiting at start-up may still be being
+         * collected. Called once per connection, and not at all if start-up fails.
+         */
+        fun onReady() {}
 
         /**
          * Start-up cannot finish: the radio did not answer [what] (the opening greeting or the
@@ -414,7 +433,7 @@ class CompanionClient(
     fun onFrame(bytes: ByteArray) {
         val frame = CompanionFrames.parse(bytes) ?: return
         when (frame) {
-            CompanionFrame.MessagesWaiting -> if (ready) enqueueOnce(Job.Sync)
+            CompanionFrame.MessagesWaiting -> if (ready && startUp.collectMessages) enqueueOnce(Job.Sync)
             CompanionFrame.AdvertHeard -> if (ready) enqueueOnce(Job.Contacts)
             is CompanionFrame.SendConfirmed -> confirm(frame)
             is CompanionFrame.TelemetryReply -> receiveTelemetry(frame.telemetry)
@@ -477,7 +496,7 @@ class CompanionClient(
                     unansweredSlots.clear()
                     for (index in 0 until slotsLeft) enqueue(Job.GetChannel(index))
                 }
-                enqueue(Job.Sync)
+                if (startUp.collectMessages) enqueue(Job.Sync)
                 // Without channel slots to read, start-up is done once these are queued.
                 if (!startUp.readChannels) becomeReady()
             }
@@ -641,6 +660,7 @@ class CompanionClient(
         requestBattery()
         for (contact in heldSaves) enqueue(Job.SaveContact(contact))
         heldSaves.clear()
+        listener.onReady()
     }
 
     private fun enqueue(job: Job) {

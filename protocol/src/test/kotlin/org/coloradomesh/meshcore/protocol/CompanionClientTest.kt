@@ -885,4 +885,60 @@ class CompanionClientTest {
         assertEquals("The radio refused setting its clock (error 6)", log.single())
         assertArrayEquals(byteArrayOf(4), lastSent())
     }
+
+    @Test
+    fun saysWhenStartUpIsThroughOnce() {
+        var readies = 0
+        val client = CompanionClient(
+            transmit = { sent.add(it) },
+            listener = object : CompanionClient.Listener {
+                override fun onReady() { readies++ }
+            },
+            clock = { now },
+        )
+        client.start()
+        client.onFrame(selfInfo())
+        client.onFrame(deviceInfo(slots = 1))
+        client.onFrame(byteArrayOf(2) + le32(0))
+        client.onFrame(byteArrayOf(4) + le32(1_700_000_500))
+        assertEquals(0, readies)
+        client.onFrame(channelInfo(0, "Public"))
+        assertEquals(1, readies)
+        client.onFrame(byteArrayOf(0x0A))
+        client.onFrame(byteArrayOf(0x83.toByte()))
+        client.onFrame(byteArrayOf(0x0A))
+        assertEquals(1, readies)
+    }
+
+    @Test
+    fun messagesCanBeLeftOnTheRadio() {
+        var readies = 0
+        val received = ArrayList<String>()
+        val client = CompanionClient(
+            transmit = { sent.add(it) },
+            listener = object : CompanionClient.Listener {
+                override fun onReady() { readies++ }
+                override fun onQueueEmpty() { queueEmpties++ }
+                override fun onChannelMessage(message: ChannelMessage) { received.add(message.text) }
+            },
+            clock = { now },
+            startUp = CompanionClient.StartUp(collectMessages = false),
+        )
+        client.start()
+        client.onFrame(selfInfo())
+        client.onFrame(deviceInfo(slots = 1))
+        client.onFrame(byteArrayOf(2) + le32(0))
+        client.onFrame(byteArrayOf(4) + le32(1_700_000_500))
+        client.onFrame(channelInfo(0, "Public"))
+        assertEquals(1, readies)
+        // Straight to the battery: no request for waiting messages.
+        assertArrayEquals(byteArrayOf(0x14), lastSent())
+        client.onFrame(battery(3_900))
+        val before = sent.size
+        client.onFrame(byteArrayOf(0x83.toByte()))
+        assertEquals(before, sent.size)
+        assertTrue(sent.none { it.contentEquals(byteArrayOf(0x0A)) })
+        assertEquals(0, queueEmpties)
+        assertTrue(received.isEmpty())
+    }
 }

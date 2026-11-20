@@ -161,6 +161,19 @@ class MecpTest {
     }
 
     @Test
+    fun aDecimalEtaIsNotReadFromEitherPart() {
+        // MECP 1.4.1 (issue #46): not 5 h from the fraction, nor 1 min from the whole part.
+        for (text in listOf("1.5h", "2,5h", "0.5h", "1.25d", "2.5min", "ETA 1.5h")) {
+            val m = Mecp.parse("MECP/2/R03 $text")!!
+            assertNull(text, m.etaMinutes)
+            assertEquals(text, m.remainder)
+        }
+        assertEquals(45, Mecp.parse("MECP/2/R03 1.5h 45min")!!.etaMinutes)
+        // A period after a letter is still a boundary.
+        assertEquals(120, Mecp.parse("MECP/2/R03 hut.2h")!!.etaMinutes)
+    }
+
+    @Test
     fun theTimeIsTheSendersAndShownAsSent() {
         assertEquals("ℹ️ ROUTINE: Running late · 18:45 sender's time", describe("MECP/3/L06 @1845"))
     }

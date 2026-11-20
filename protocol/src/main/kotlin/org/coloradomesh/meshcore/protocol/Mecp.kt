@@ -8,7 +8,7 @@ import java.util.Locale
  * `MECP/<severity>/<codes> [free text]`, for example `MECP/0/M01 M07 2pax P05 48.6520,20.1305`:
  * MAYDAY, injury, fracture, 2 people, at those coordinates.
  *
- * [parse] follows MECP 1.4.0 (github.com/mecp-org/MECP, `MECP_Comprehensive_Brief.md` §6.1): the
+ * [parse] follows MECP 1.4.1 (github.com/mecp-org/MECP, `MECP_Comprehensive_Brief.md` §6.1): the
  * message pattern, then each free-text convention by its decoding pattern, searched between
  * boundaries, with the first match that passes the convention's validation used and a failed one
  * left in the free text. It passes the protocol's conformance cases (`freetext/tests.json`).
@@ -37,6 +37,7 @@ object Mecp {
          * The ETA in minutes, from a duration in the free text when `R03` (ETA) is among the codes:
          * `45min`, `2h`, `1h30min`, `2d`, `ETA 45min`, or a bare whole number as the first word.
          * The first by position wins, and a bare number counts only when no value with a unit does.
+         * A decimal is never read: not `1.5h` as 5 h (from its fraction), nor as 1 minute (MECP 1.4.1).
          */
         val etaMinutes: Int?,
         /** An incident tag, from `#tag`, as written. */
@@ -140,6 +141,24 @@ object Mecp {
     private val BARE_DURATION = token("""^(?:[Ee][Tt][Aa] ?)?([0-9]+)([.,][0-9]+)?""")
 
     /**
+     * MECP 1.4.1: a duration's number must not be the fraction of a decimal, so `1.5h` is not 5 h.
+     * `.` and `,` are boundaries, so without this the pattern finds `5h` just after the mark.
+     */
+    private fun isFractionPart(text: String, match: MatchResult): Boolean {
+        val start = match.groups[1]?.range?.first ?: return false
+        return start >= 2 && text[start - 1] in ".," && text[start - 2] in '0'..'9'
+    }
+
+    /**
+     * MECP 1.4.1: a bare number must not be the whole part of a decimal whose fraction failed to
+     * match, so the `1` of `1.5h` is not 1 minute. `45.` at the end is still 45.
+     */
+    private fun hasDecimalAfter(text: String, match: MatchResult): Boolean {
+        val end = match.groups[1]?.range?.last?.plus(1) ?: return false
+        return end + 1 < text.length && text[end] in ".," && text[end + 1] in '0'..'9'
+    }
+
+    /**
      * Decodes [text] when it is an MECP message, or returns null. The prefix and codes are
      * case-sensitive, a message needs a severity from 0 to 3 and at least one code, and it must be a
      * single line: one final line ending is allowed and dropped. A message over MECP's 200 bytes is
@@ -184,13 +203,15 @@ object Mecp {
             fun valid(minutes: Long?): Int? = minutes?.takeIf { it in 1..Int.MAX_VALUE.toLong() }?.toInt()
             // The first valid match of each pattern; the earliest of those, the earlier pattern on a tie.
             val found = DURATIONS.mapNotNull { (pattern, minutes) ->
-                firstValid(pattern, search) { valid(minutes(it)) != null }?.let { it to minutes }
+                firstValid(pattern, search) { m -> valid(minutes(m)) != null && !isFractionPart(search, m) }?.let { it to minutes }
             }.minByOrNull { (match, _) -> match.range.first }
             if (found != null) {
                 eta = valid(found.second(found.first))
                 used.add(found.first.range)
             } else {
-                take(BARE_DURATION) { m -> m.groups[2] == null && valid(number(m, 1))?.also { eta = it } != null }
+                take(BARE_DURATION) { m ->
+                    m.groups[2] == null && !hasDecimalAfter(search, m) && valid(number(m, 1))?.also { eta = it } != null
+                }
             }
         }
 

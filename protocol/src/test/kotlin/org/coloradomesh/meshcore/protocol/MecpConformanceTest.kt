@@ -6,98 +6,119 @@ import org.junit.Test
 
 /**
  * MECP's conformance cases for its free-text conventions, from `freetext/tests.json` in
- * github.com/mecp-org/MECP at tag v1.4.0 (CC0), one row per case, in the same order. Each case gives
- * a message and what a conforming decoder takes from it for one convention; null means nothing.
+ * github.com/mecp-org/MECP at tag v1.4.1 (CC0), one row per case, in the same order. Each case
+ * gives a message and everything a conforming decoder takes from it, as MECP's own checker
+ * (`scripts/check-freetext.mjs`) compares it: a convention left out means nothing is taken for
+ * it, and a null expectation means the text is not an MECP message.
  */
 class MecpConformanceTest {
-    private class Case(val convention: String, val input: String, val expected: Any?)
+    private class Case(val title: String, val input: String, val expected: Map<String, Any>?)
 
     private val cases = listOf(
-        Case("timestamp", "MECP/3/L06 @2460 @1400 @1530", "14:00"),
-        Case("timestamp", "MECP/3/L06 @9999", null),
-        Case("timestamp", "MECP/3/L01 @123", "01:23"),
-        Case("timestamp", "MECP/2/T05 @1430,", "14:30"),
-        Case("timestamp", "MECP/2/T05 meet@1430", null),
-        Case("reference", "MECP/2/C08 #base-camp,", "base-camp"),
-        Case("reference", "MECP/2/C08 (#tag)", "tag"),
-        Case("reference", "MECP/2/C08 #hut\u3000ok", "hut"),
-        Case("reference", "MECP/2/C08 #hut\u060Cok", "hut"),
-        Case("reference", "MECP/2/C08 #hut\u201Dok", "hut"),
-        Case("reference", "MECP/2/C08 #hut\u3001ok", "hut"),
-        Case("reference", "MECP/2/C08 #hut\uFF0Cok", "hut"),
-        Case("reference", "MECP/2/C08 #hut2/basecamp", null),
-        Case("reference", "MECP/3/L06 see https://example.org/#notes", null),
-        Case("pax", "MECP/1/S01 3paxmore", null),
-        Case("pax", "MECP/1/S01 3pax*", null),
-        Case("timestamp", "MECP/3/L06 eta=@1430", null),
-        Case("pax", "MECP/1/S01 0pax 2pax", 2),
-        Case("pax", "MECP/1/S01 04pax", 4),
-        Case("gps", "MECP/3/L06 95.0,200.0 47.3,8.5", "47.3,8.5"),
-        Case("gps", "MECP/3/L02 2,5 km", null),
-        Case("callsign", "MECP/3/L20 ~DL/OK1ABC", "DL/OK1ABC"),
-        Case("callsign", "MECP/3/L20 ~ABCDEFGHIJKLM ~OK1ABC", "OK1ABC"),
-        Case("callsign", "MECP/3/L20 ~W1AW-9", null),
-        Case("message", "MECP/3/L20 ~W1AW-9", "valid" to true),
-        Case("language", "MECP/3/L04 @zh_CN", "zh-cn"),
-        Case("duration", "MECP/2/R03 45min", 45),
-        Case("duration", "MECP/2/R03 2d", 2880),
-        Case("duration", "MECP/2/R03 48h", 2880),
-        Case("duration", "MECP/2/R03 2880min", 2880),
-        Case("duration", "MECP/2/R03 ETA 45min", 45),
-        Case("duration", "MECP/2/R03 45", 45),
-        Case("duration", "MECP/2/C01 R03 P05 47.3769,12.1048 45min", 45),
-        Case("duration", "MECP/3/L06 45min", null),
-        Case("duration", "MECP/2/C01 R03 1pax 45", null),
-        Case("duration", "MECP/2/R03 30s", null),
-        Case("duration", "MECP/2/R03 30s 45min", 45),
-        Case("duration", "MECP/2/R03 47.3769,12.1048", null),
-        Case("duration", "MECP/2/R03 45.", 45),
-        Case("duration", "MECP/2/R03 45 0h", 45),
-        Case("duration", "MECP/2/R03 45 2h", 120),
-        Case("duration", "MECP/2/R03 2d 45min", 2880),
-        Case("duration", "MECP/2/R03 45min 2h", 45),
-        Case("duration", "MECP/2/R03 1h 30min", 90),
-        Case("duration", "MECP/2/R03 2 h", 120),
-        Case("message", "MECP/1/T05 ", "valid" to false),
-        Case("message", "MECP/1/t05 x", "valid" to false),
-        Case("message", "MECP/1/T05 T05 damaged", "valid" to true),
-        Case("message", "MECP/1/T05 T05 damaged\n", "valid" to true),
-        Case("message", "MECP/1/T05 T05 damaged\r\n", "valid" to true),
-        Case("message", "MECP/1/T05 T05 damaged\r", "valid" to true),
-        Case("message", "MECP/1/T05 foo\nbar", "valid" to false),
-        Case("message", "MECP/1/T05 foo\u2028bar", "valid" to false),
-        Case("message", "MECP/1/T05 foo\u000Cbar", "valid" to false),
-        Case("message", "MECP/0/M01 " + "A".repeat(191), "valid" to true),
+        Case("Timestamp: out-of-range values are skipped and the first valid one is used", "MECP/3/L06 @2460 @1400 @1530", mapOf("timestamp" to "14:00")),
+        Case("Timestamp: an out-of-range value is not decoded", "MECP/3/L06 @9999", mapOf()),
+        Case("Timestamp: a three-digit value implies a leading zero hour", "MECP/3/L01 @123", mapOf("timestamp" to "01:23")),
+        Case("Timestamp: trailing punctuation is a boundary", "MECP/2/T05 @1430,", mapOf("timestamp" to "14:30")),
+        Case("Timestamp: a sigil inside a word is not decoded", "MECP/2/T05 meet@1430", mapOf()),
+        Case("Timestamp: an equals sign is not a boundary", "MECP/3/L06 eta=@1430", mapOf()),
+        Case("Reference: trailing punctuation is a boundary", "MECP/2/C08 #base-camp,", mapOf("reference" to "base-camp")),
+        Case("Reference: parentheses are boundaries", "MECP/2/C08 (#tag)", mapOf("reference" to "tag")),
+        Case("Reference: the full tag is kept, not truncated", "MECP/2/C08 #basecamp", mapOf("reference" to "basecamp")),
+        Case("Reference: an ideographic space (U+3000) is a boundary", "MECP/2/C08 #hut\u3000ok", mapOf("reference" to "hut")),
+        Case("Reference: an Arabic comma (U+060C) is a boundary", "MECP/2/C08 #hut\u060Cok", mapOf("reference" to "hut")),
+        Case("Reference: a right double quotation mark (U+201D) is a boundary", "MECP/2/C08 #hut\u201Dok", mapOf("reference" to "hut")),
+        Case("Reference: an ideographic comma (U+3001) is a boundary", "MECP/2/C08 #hut\u3001ok", mapOf("reference" to "hut")),
+        Case("Reference: a fullwidth comma (U+FF0C) is a boundary", "MECP/2/C08 #hut\uFF0Cok", mapOf("reference" to "hut")),
+        Case("Reference: a slash is not a boundary", "MECP/2/C08 #hut2/basecamp", mapOf()),
+        Case("Reference: a fragment inside a URL is not decoded", "MECP/3/L06 see https://example.org/#notes", mapOf()),
+        Case("Pax: letters after the unit prevent a match", "MECP/1/S01 3paxmore", mapOf()),
+        Case("Pax: zero fails validation and the next value is used", "MECP/1/S01 0pax 2pax", mapOf("pax" to 2)),
+        Case("Pax: leading zeros are ignored", "MECP/1/S01 04pax", mapOf("pax" to 4)),
+        Case("Pax: parentheses are boundaries", "MECP/1/S01 (4pax)", mapOf("pax" to 4)),
+        Case("Pax: the unit is case-insensitive and a trailing period is a boundary", "MECP/1/S01 4Pax.", mapOf("pax" to 4)),
+        Case("Pax: a no-break space (U+00A0) is a boundary", "MECP/1/S01 4pax\u00A0water", mapOf("pax" to 4)),
+        Case("Pax: a vertical tab (U+000B) is not a boundary", "MECP/1/S01 4pax\u000Bwater", mapOf()),
+        Case("Pax: the first value wins", "MECP/1/S01 2pax 5pax", mapOf("pax" to 2)),
+        Case("Pax: an asterisk is not a boundary", "MECP/1/S01 3pax*", mapOf()),
+        Case("GPS: an out-of-range position is skipped and the next valid one is used", "MECP/3/L06 95.0,200.0 47.3,8.5", mapOf("gps" to "47.3,8.5")),
+        Case("GPS: integers with a decimal comma are not a position", "MECP/3/L02 2,5 km", mapOf()),
+        Case("GPS: a plus sign and a space after the comma are accepted", "MECP/0/M04 +48.8566, 2.3522", mapOf("gps" to "48.8566,2.3522")),
+        Case("GPS: a latitude just above 90 is not decoded", "MECP/0/M04 90.0001,0.0", mapOf()),
+        Case("GPS: letters before the position prevent a match", "MECP/0/M01 x48.65,20.13", mapOf()),
+        Case("Callsign: a prefix separated by a slash is kept", "MECP/3/L20 ~DL/OK1ABC", mapOf("callsign" to "DL/OK1ABC")),
+        Case("Callsign: one longer than 12 characters is skipped and the next valid one is used", "MECP/3/L20 ~ABCDEFGHIJKLM ~OK1ABC", mapOf("callsign" to "OK1ABC")),
+        Case("Callsign: exactly 12 characters is accepted", "MECP/3/L20 ~ABCDEFGHIJKL", mapOf("callsign" to "ABCDEFGHIJKL")),
+        Case("Callsign: an APRS/AX.25 SSID is not decoded, and the message is still valid", "MECP/3/L20 ~W1AW-9", mapOf()),
+        Case("Language: an underscore region tag is normalised to lowercase with a hyphen", "MECP/3/L04 @zh_CN", mapOf("language" to "zh-cn")),
+        Case("Language: an uppercase tag is normalised to lowercase", "MECP/3/L04 @DE", mapOf("language" to "de")),
+        Case("Duration: minutes", "MECP/2/R03 45min", mapOf("duration" to 45)),
+        Case("Duration: days are converted to minutes, with no upper bound", "MECP/2/R03 2d", mapOf("duration" to 2880)),
+        Case("Duration: hours are converted to minutes", "MECP/2/R03 48h", mapOf("duration" to 2880)),
+        Case("Duration: a large minute count is not capped", "MECP/2/R03 2880min", mapOf("duration" to 2880)),
+        Case("Duration: an ETA prefix is accepted", "MECP/2/R03 ETA 45min", mapOf("duration" to 45)),
+        Case("Duration: a bare number as the first freetext token is minutes", "MECP/2/R03 45", mapOf("duration" to 45)),
+        Case("Duration: R03 applies when it is not the first code, alongside a position", "MECP/2/C01 R03 P05 47.3769,12.1048 45min", mapOf("gps" to "47.3769,12.1048", "duration" to 45)),
+        Case("Duration: not decoded without R03", "MECP/3/L06 45min", mapOf()),
+        Case("Duration: a bare number that is not the first freetext token is not decoded", "MECP/2/C01 R03 1pax 45", mapOf("pax" to 1)),
+        Case("Duration: seconds are not a unit", "MECP/2/R03 30s", mapOf()),
+        Case("Duration: a value in seconds is skipped and the next value is used", "MECP/2/R03 30s 45min", mapOf("duration" to 45)),
+        Case("Duration: a position as the first freetext token is not a bare number", "MECP/2/R03 47.3769,12.1048", mapOf("gps" to "47.3769,12.1048")),
+        Case("Duration: a bare number followed by a period is minutes", "MECP/2/R03 45.", mapOf("duration" to 45)),
+        Case("Duration: a zero value is skipped and the bare number is used", "MECP/2/R03 45 0h", mapOf("duration" to 45)),
+        Case("Duration: a value with a unit is preferred over a bare number", "MECP/2/R03 45 2h", mapOf("duration" to 120)),
+        Case("Duration: the first value by position wins (days before minutes)", "MECP/2/R03 2d 45min", mapOf("duration" to 2880)),
+        Case("Duration: the first value by position wins (minutes before hours)", "MECP/2/R03 45min 2h", mapOf("duration" to 45)),
+        Case("Duration: hours and minutes separated by a space are combined", "MECP/2/R03 1h 30min", mapOf("duration" to 90)),
+        Case("Duration: a space between the number and the unit is accepted", "MECP/2/R03 2 h", mapOf("duration" to 120)),
+        Case("Duration: a decimal hour is not read from its fractional part", "MECP/2/R03 1.5h", mapOf()),
+        Case("Duration: a decimal with a comma is not read from its fractional part", "MECP/2/R03 2,5h", mapOf()),
+        Case("Duration: a decimal below one is not read from its fractional part", "MECP/2/R03 0.5h", mapOf()),
+        Case("Duration: a decimal day is not read from its fractional part", "MECP/2/R03 1.25d", mapOf()),
+        Case("Duration: a decimal minute value is not read from its fractional part", "MECP/2/R03 2.5min", mapOf()),
+        Case("Duration: a skipped decimal value lets the next value be used", "MECP/2/R03 1.5h 45min", mapOf("duration" to 45)),
+        Case("Duration: a period after a letter still separates a value", "MECP/2/R03 hut.2h", mapOf("duration" to 120)),
+        Case("Message: a trailing space is invalid", "MECP/1/T05 ", null),
+        Case("Message: a lowercase first code is not a code, so the message has no codes and is invalid", "MECP/1/t05 x", null),
+        Case("Message: a repeated code is still valid", "MECP/1/T05 T05 damaged", mapOf()),
+        Case("Message: an unknown but well-formed code is still a valid message", "MECP/3/Z99 hello", mapOf()),
+        Case("Message: a lowercase code ends the code section, so a lowercase r03 does not enable duration", "MECP/2/L01 r03 45min", mapOf()),
+        Case("Message: no codes after the severity is invalid", "MECP/0/", null),
+        Case("Message: a missing code section is invalid", "MECP/0", null),
+        Case("Message: severity above 3 is invalid", "MECP/4/M01", null),
+        Case("Message: one trailing LF is removed before matching", "MECP/1/T05 T05 damaged\n", mapOf()),
+        Case("Message: one trailing CRLF is removed before matching", "MECP/1/T05 T05 damaged\r\n", mapOf()),
+        Case("Message: one trailing CR is removed before matching", "MECP/1/T05 T05 damaged\r", mapOf()),
+        Case("Message: an embedded LF is invalid", "MECP/1/T05 foo\nbar", null),
+        Case("Message: an embedded line separator (U+2028) is invalid", "MECP/1/T05 foo\u2028bar", null),
+        Case("Message: an embedded form feed is invalid", "MECP/1/T05 foo\u000Cbar", null),
+        Case("Message: decoders accept a message longer than 200 bytes (202 bytes)", "MECP/0/M01 " + "A".repeat(191), mapOf()),
     )
 
-    /** What [Mecp.parse] took from [input] for [convention], in the form the cases use. */
-    private fun decoded(convention: String, input: String): Any? {
-        val m = Mecp.parse(input)
-        if (convention == "message") return "valid" to (m != null)
-        m ?: return "not parsed"
-        return when (convention) {
-            "timestamp" -> m.time?.let { "${it.substring(0, 2)}:${it.substring(2)}" }
-            "reference" -> m.reference
-            "pax" -> m.people
-            "gps" -> if (m.hasPosition) "${m.latitude},${m.longitude}" else null
-            "callsign" -> m.callsign
-            "language" -> m.language
-            "duration" -> m.etaMinutes
-            else -> "unknown convention"
+    /** Everything [Mecp.parse] took from [input], in the form the cases use, or null if not MECP. */
+    private fun decoded(input: String): Map<String, Any>? {
+        val m = Mecp.parse(input) ?: return null
+        return buildMap {
+            m.time?.let { put("timestamp", "${it.substring(0, 2)}:${it.substring(2)}") }
+            m.reference?.let { put("reference", it) }
+            m.people?.let { put("pax", it) }
+            if (m.hasPosition) put("gps", "${m.latitude},${m.longitude}")
+            m.callsign?.let { put("callsign", it) }
+            m.language?.let { put("language", it) }
+            m.etaMinutes?.let { put("duration", it) }
         }
     }
 
     @Test
     fun everyCasePasses() {
         val failures = cases.mapNotNull { case ->
-            val got = decoded(case.convention, case.input)
-            if (got == case.expected) null else "${case.convention} \"${case.input}\": expected ${case.expected}, got $got"
+            val got = decoded(case.input)
+            if (got == case.expected) null else "${case.title} (\"${case.input}\"): expected ${case.expected}, got $got"
         }
         assertTrue(failures.joinToString("\n"), failures.isEmpty())
     }
 
     @Test
     fun allOfThemAreHere() {
-        assertEquals(55, cases.size)
+        assertEquals(77, cases.size)
     }
 }
